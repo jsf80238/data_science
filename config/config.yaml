@@ -1,0 +1,63 @@
+logging:
+  level: INFO
+
+jdbc:
+  port_number:
+    mssql: 1433
+    postgresql: 5432
+
+  class_name:
+    mssql: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    postgresql: org.postgresql.Driver
+
+  jar:
+    mssql: lib/jars/mssql-jdbc-12.4.2.jre11.jar
+    postgresql: lib/jars/postgresql-42.7.0.jar
+
+  connection_string:
+    mssql: jdbc:sqlserver://put_host_name_here:put_port_number_here;databaseName=put_database_name_here;trustServerCertificate=true
+    postgresql: jdbc:postgresql://put_host_name_here:put_port_number_here/put_database_name_here
+
+#datatype:
+#  mssql:
+#    number:
+#      - BIGINT
+#      - BINARY
+#      - BIT
+#      - BOOLEAN
+#      - DECIMAL
+#      - DOUBLE
+#      - FLOAT
+#      - INTEGER
+#      - NUMERIC
+#      - REAL
+#      - SMALLINT
+#      - TINYINT
+#      - VARBINARY
+#    datetime:
+#      - DATE
+#      - TIMESTAMP
+#    string:
+#      - BLOB
+#      - CHAR
+#      - CLOB
+#      - LONGNVARCHAR
+#      - LONGVARBINARY
+#      - LONGVARCHAR
+#      - NCHAR
+#      - NCLOB
+#      - NVARCHAR
+#      - OTHER
+#      - SQLXML
+#      - TIME
+#      - VARCHAR
+
+# https://stackoverflow.com/questions/57981975/how-to-understand-the-cursor-description-returned-columns-in-hdb-from-python
+#name
+#type_code
+#display_size
+#internal_size
+#precision
+#scale
+#null_ok
+#('bigint_col', DBAPITypeObject('BOOLEAN', 'BIGINT', 'BIT', 'INTEGER', 'SMALLINT', 'TINYINT'), 20, 20, 19, 0, 1)
