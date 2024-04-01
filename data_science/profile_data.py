@@ -11,14 +11,16 @@ import sys
 import tempfile
 # Imports above are standard Python
 # Imports below are 3rd-party
-from lib.base import C, Database, Logger, get_line_count
 from argparse_range import range_action
 import dateutil.parser
 from dotenv import dotenv_values
 import openpyxl
 from openpyxl.styles import Border, Side, Alignment, Font, borders
+from matplotlib import pyplot as plt
 import pandas as pd
 import seaborn as sns
+# Imports below are custom
+from lib.base import C, Database, Logger, get_line_count
 
 # Excel limitation
 MAX_SHEET_NAME_LENGTH = 31
@@ -30,10 +32,12 @@ VALUE, COUNT = "Value", "Count"
 NUMBER, DATETIME, STRING = "NUMBER", "DATETIME", "STRING"
 # When producing a list of detail values and their frequency of occurrence
 DEFAULT_MAX_DETAIL_VALUES = 35
+DETAIL_ABBR = " det"
 # When analyzing the patterns of a string column
 DEFAULT_MAX_PATTERN_LENGTH = 50
-# Don't plot distributions if there are fewer than this number of distinct values
-DISTRIBUTION_PLOT_MIN_VALUES = 6
+PATTERN_ABBR = " pat"
+# Don't plot distributions/boxes if there are fewer than this number of distinct values
+PLOT_MIN_VALUES = 6
 # Categorical plots should have no more than this number of distinct values
 CATEGORICAL_PLOT_MAX_VALUES = 5
 # When determining the datatype of a CSV column examine (up to) this number of records
@@ -41,7 +45,7 @@ DATATYPE_SAMPLING_SIZE = 500
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
 PLOT_FONT_SCALE = 0.75
-# Good character for histograms U+25A0
+# Good character for spreadsheet-embedded histograms U+25A0
 BLACK_SQUARE = "■"
 
 DATATYPE_MAPPING_DICT = {
@@ -412,6 +416,7 @@ if __name__ == "__main__":
     tempdir_path = Path(tempdir.name)
     # To keep track of which columns have distribution plots
     distribution_plot_list = list()
+    box_plot_list = list()
 
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
@@ -488,7 +493,7 @@ if __name__ == "__main__":
             detail_df["value"] = [x[0] for x in most_common_list]
             detail_df["count"] = [x[1] for x in most_common_list]
             detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
-            detail_df["histogram"] = [BLACK_SQUARE * (1 + int(x[1] * 100 / row_count)) for x in most_common_list]
+            # detail_df["histogram"] = [BLACK_SQUARE * (1 + int(x[1] * 100 / row_count)) for x in most_common_list]
             detail_dict[column_name] = detail_df
         else:
             logger.warning(f"Column '{column_name}' is empty.")
@@ -504,14 +509,15 @@ if __name__ == "__main__":
             pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
             pattern_df["count"] = [x[1] for x in most_common_pattern_list]
             pattern_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_pattern_list]
+            # pattern_df["histogram"] = [BLACK_SQUARE * (1 + int(x[1] * 100 / row_count)) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
             values = pd.Series(values)
-            sns.set_theme()
-            sns.set(font_scale=PLOT_FONT_SCALE)
             plot_data = values.value_counts(normalize=True)
-            if len(plot_data) >= DISTRIBUTION_PLOT_MIN_VALUES:
+            if len(plot_data) >= PLOT_MIN_VALUES:
                 logger.debug("Creating a distribution plot ...")
+                sns.set_theme()
+                sns.set(font_scale=PLOT_FONT_SCALE)
                 g = sns.displot(values)
                 plot_output_path = tempdir_path / f"{column_name}.distribution.png"
                 g.set_axis_labels(column_name, COUNT, labelpad=10)
@@ -520,8 +526,35 @@ if __name__ == "__main__":
                 g.savefig(plot_output_path)
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 distribution_plot_list.append(column_name)
+            if len(non_null_values) > PLOT_MIN_VALUES:
+                plot_output_path = tempdir_path / f"{column_name}.box.png"
+                fig, axs = plt.subplots(
+                    nrows=2,
+                    ncols=1,
+                    figsize=(PLOT_SIZE_X, PLOT_SIZE_Y)
+                )
+                sns.boxplot(
+                    ax=axs[0],
+                    data=None,
+                    x=non_null_values,
+                    showfliers=True,
+                    orient="h"
+                )
+                axs[0].set_xlabel(f"'{column_name}' with outliers")
+                sns.boxplot(
+                    ax=axs[1],
+                    data=None,
+                    x=non_null_values,
+                    showfliers=False,
+                    orient="h"
+                )
+                axs[1].set_xlabel(f"'{column_name}' without outliers")
+                #plt.subplots_adjust(left=1, right=4, bottom=0.75, top=3, wspace=0.5, hspace=3)
+                plt.savefig(plot_output_path)
+                logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
+                box_plot_list.append(column_name)
             else:
-                logger.debug("Not enough distinct values to create a distribution plot.")
+                logger.debug("Not enough distinct values to create plots.")
 
     # Convert the summary_dict dictionary of dictionaries to a DataFrame
     result_df = pd.DataFrame.from_dict(summary_dict, orient='index')
@@ -533,12 +566,12 @@ if __name__ == "__main__":
     # And generate a detail sheet, and optionally a pattern sheet, for each column
     for column_name, detail_df in detail_dict.items():
         logger.debug(f"Examining column '{column_name}' ...")
-        target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " det"
+        target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + DETAIL_ABBR
         logger.info(f"Writing detail for column '{column_name}' to sheet '{target_sheet_name}' ...")
         detail_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
         if column_name in pattern_dict:
-            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " pat"
-            logger.info(f"Writing pattern detail for string column '{column_name}' to sheet '{target_sheet_name}' ...")
+            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + PATTERN_ABBR
+            logger.info(f"Writing pattern information for string column '{column_name}' to sheet '{target_sheet_name}' ...")
             pattern_df = pattern_dict[column_name]
             pattern_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
     writer.close()
@@ -553,9 +586,10 @@ if __name__ == "__main__":
         sheet_number += 1
         if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
             continue
-        column_name = sheet_name[:-7]  # remove " detail" from sheet name to get column name
+        column_name = sheet_name[:len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
         if column_name in distribution_plot_list:
-            workbook.create_sheet(column_name + " distribution", sheet_number+1)
+            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
+            workbook.create_sheet(target_sheet_name, sheet_number+1)
             worksheet = workbook.worksheets[sheet_number+1]
             image_path = tempdir_path / (column_name + ".distribution.png")
             logger.info(f"Adding {image_path} to {output_file} after sheet {sheet_name} ...")
@@ -563,11 +597,22 @@ if __name__ == "__main__":
             image.anchor = "A1"
             worksheet.add_image(image)
             sheet_number += 1
+        if column_name in box_plot_list:
+            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " box"
+            workbook.create_sheet(target_sheet_name, sheet_number+1)
+            worksheet = workbook.worksheets[sheet_number+1]
+            image_path = tempdir_path / (column_name + ".box.png")
+            logger.info(f"Adding {image_path} to {output_file} after sheet {sheet_name} ...")
+            image = openpyxl.drawing.image.Image(image_path)
+            image.anchor = "A1"
+            worksheet.add_image(image)
+            sheet_number += 1
 
-    # Size bar columns for the worksheets showing the ranks of values and patterns
+    # Size a histogram column for each worksheet which contains the ranks of values or patterns
     for i, sheet_name in enumerate(workbook.sheetnames):
-        if sheet_name.endswith("detail") or sheet_name.endswith("pattern"):
+        if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
             worksheet = workbook.worksheets[i]
+            worksheet[f'E1'] = "Histogram"
             for row_number in range(2, worksheet.max_row+1):
                 value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
                 bar_representation = "█" * round(value_to_convert)
