@@ -286,12 +286,9 @@ if __name__ == "__main__":
                         metavar="/path/to/dir",
                         default=Path.cwd(),
                         help="Default is the current directory. Will make intermediate directories as necessary.")
-    parser.add_argument('--output-excel',
+    parser.add_argument('--html',
                         action='store_true',
-                        help="Default is HTML only.")
-    parser.add_argument('--no-output-html',
-                        action='store_true',
-                        help="Default is HTML only.")
+                        help="Also produce a zip file containing the results in HTML format.")
     parser.add_argument('--db-host-name',
                         metavar="HOST_NAME",
                         help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
@@ -336,11 +333,9 @@ if __name__ == "__main__":
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
-    is_html_output = not args.no_output_html
-    is_excel_output = args.output_excel
+    is_html_output = args.html
+    is_excel_output = True
     target_dir = Path(args.target_dir)
-    if not (is_html_output or is_excel_output):
-        parser.error("Either or both Excel and HTML output required.")
 
     environment_settings_dict = {
         **os.environ,
@@ -640,6 +635,7 @@ if __name__ == "__main__":
                 axs[1].set_xlabel(f"'{column_name}' without outliers")
                 #plt.subplots_adjust(left=1, right=4, bottom=0.75, top=3, wspace=0.5, hspace=3)
                 plt.savefig(plot_output_path)
+                plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
             else:
@@ -677,7 +673,7 @@ if __name__ == "__main__":
             sheet_number += 1
             if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
                 continue
-            column_name = sheet_name[:len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
+            column_name = sheet_name[:-len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
             if column_name in histogram_plot_list:
                 target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
                 workbook.create_sheet(target_sheet_name, sheet_number+1)

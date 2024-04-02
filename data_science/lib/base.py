@@ -80,43 +80,47 @@ else:
 class Logger:
     __instance = None
 
-    def record_factory_factory(session: str):
-        """Enables us to display a session identifier with each log message."""
+    def record_factory_factory(session_id: str):
+        """Enables us to display a session_id identifier with each log message."""
         def record_factory(*args, **kwargs):
             record = old_factory(*args, **kwargs)
-            record.session = session
+            record.session_id = session_id
             return record
 
         return record_factory
 
     def __new__(cls,
                 level: [str | int] = None,
-                session: str = None,
+                is_generate_session_id: bool = False,
+                session_id: str = None,
                 **kwargs
                 ):
         """
         Return the same logger for every invocation.
-        Includes a session to help with correlation. By default it's a random 6-character string.
+        Optionally include a session_id string to help with correlation. By default it's a random 6-character string.
         """
         if not cls.__instance:
-            if session:
-                cls.session = session
+            if session_id:
+                cls.session_id = session_id
             else:
-                cls.session = ''.join(choices(ascii_lowercase, k=6))
+                cls.session_id = ''.join(choices(ascii_lowercase, k=6))
             if level:
                 cls.level = level.upper()
             else:
                 cls.level = config_dict["logging"]["level"]
 
             cls.logger = logging.getLogger()
-            # Add session identifier
-            logging.setLogRecordFactory(cls.record_factory_factory(cls.session))
+            # Add session_id identifier?
+            if is_generate_session_id:
+                logging.setLogRecordFactory(cls.record_factory_factory(cls.session_id))
             # Set overall logging level, will be overridden by the handlers
             cls.logger.setLevel(logging.DEBUG)
             # Formatting
             date_format = '%Y-%m-%dT%H:%M:%S%z'
-            formatter = logging.Formatter('%(asctime)s | %(levelname)8s | session=%(session)s | %(message)s',
-                                          datefmt=date_format)
+            if is_generate_session_id:
+                formatter = logging.Formatter('%(asctime)s | %(levelname)8s | session_id=%(session_id)s | %(message)s', datefmt=date_format)
+            else:
+                formatter = logging.Formatter('%(asctime)s | %(levelname)8s | %(message)s', datefmt=date_format)
             # Logging to STDERR
             console_handler = logging.StreamHandler()
             console_handler.setLevel(cls.level)
