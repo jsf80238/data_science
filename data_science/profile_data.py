@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import random
 import re
+import shutil
 from statistics import mean, quantiles, stdev
 import sys
 import tempfile
@@ -39,7 +40,7 @@ DETAIL_ABBR = " det"
 DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
 DEFAULT_MAX_PATTERN_LENGTH = 50
 PATTERN_ABBR = " pat"
-# Don't plot distributions/boxes if there are fewer than this number of distinct values
+# Don't plot histograms/boxes if there are fewer than this number of distinct values
 PLOT_MIN_VALUES = 6
 # Categorical plots should have no more than this number of distinct values
 CATEGORICAL_PLOT_MAX_VALUES = 5
@@ -53,6 +54,8 @@ BLACK_SQUARE = "■"
 # Output can be to Excel or HTML
 EXCEL = "EXCEL"
 HTML = "HTML"
+OPEN, CLOSE = "{", "}"
+
 
 DATATYPE_MAPPING_DICT = {
     "BIGINT": NUMBER,
@@ -194,9 +197,58 @@ def get_pattern(l: list) -> dict:
     return counter
 
 
+def make_html_header(title: str, root_output_file: str = None) -> str:
+    """
+    | Creates the first part of an HTML file.
+    | Used when creating HTML output.
+
+    :param title: displayed by the browser
+    :param root_output_file: path to home page, None if creating the home page
+    :return: <!DOCTYPE html> <html lang="en-US"> <head> ...
+    """
+    if root_output_file:
+        home_link = f'<a href="../{root_output_file.name}">Home</a>'
+    else:
+        home_link = ""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en-US">
+        <head>
+        <meta charset="utf-8">
+        <title>Exploratory Data Analysis for {title}</title>
+        <style>
+            html {OPEN}
+                font-family: monospace;
+                font-size: smaller;
+            {CLOSE}
+            h1, h2 {OPEN}
+                text-align: center;
+            {CLOSE}
+            table, tr, td {OPEN}
+                border: 1px solid #000;
+            {CLOSE}
+        </style>
+        </head>
+        <body>
+        {home_link}
+    """
+
+
+def make_html_footer() -> str:
+    """
+    | Helper function
+
+    :return: </body> </html>
+    """
+    return f"""
+            </body>
+        </html>
+    """
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else.')
+        description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
 
     parser.add_argument('input',
                         metavar="/path/to/input_data_file.csv | query-against-database",
@@ -206,7 +258,7 @@ if __name__ == "__main__":
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
                         default=0,
-                        help="When reading from a file specifies the number of rows to skip for header information. Ignored when getting data from a database. Default is 0.")
+                        help="When reading from a file specifies the number of rows to skip UNTIL the header row. Ignored when getting data from a database. Default is 0.")
     parser.add_argument('--sample-rows-file',
                         type=int,
                         metavar="NUM",
@@ -236,11 +288,9 @@ if __name__ == "__main__":
                         help="Default is the current directory. Will make intermediate directories as necessary.")
     parser.add_argument('--output-excel',
                         action='store_true',
-                        default=False,
                         help="Default is HTML only.")
-    parser.add_argument('--output-html',
+    parser.add_argument('--no-output-html',
                         action='store_true',
-                        default=True,
                         help="Default is HTML only.")
     parser.add_argument('--db-host-name',
                         metavar="HOST_NAME",
@@ -286,9 +336,11 @@ if __name__ == "__main__":
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
-    is_html_output = args.output_html
+    is_html_output = not args.no_output_html
     is_excel_output = args.output_excel
     target_dir = Path(args.target_dir)
+    if not (is_html_output or is_excel_output):
+        parser.error("Either or both Excel and HTML output required.")
 
     environment_settings_dict = {
         **os.environ,
@@ -390,11 +442,10 @@ if __name__ == "__main__":
                     continue
                 if ratio >= 1 or random.random() < ratio:
                     for column_name, value in row.items():
+                        column_name = column_name.replace("/", "_")  # slashes don't work well in paths
                         data_dict[column_name].append(value)
         # Set best type for each column of data
         for column_name, values in data_dict.items():
-            if False and column_name != 'Discount_pct':  # For testing
-                continue
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
             non_null_list = [x for x in values if x]
             sampled_list = random.sample(non_null_list, min(DATATYPE_SAMPLING_SIZE, len(non_null_list)))
@@ -435,18 +486,18 @@ if __name__ == "__main__":
             non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x]
 
     # Data has been read into input_df, now process it
-    # To temporarily hold distribution plots
+    # To temporarily hold plots and html files
     tempdir = tempfile.TemporaryDirectory()
     tempdir_path = Path(tempdir.name)
-    # To keep track of which columns have distribution plots
-    distribution_plot_list = list()
+    # To keep track of which columns have histogram plots
+    histogram_plot_list = list()
     box_plot_list = list()
 
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
-    for column_name, values in data_dict.items():  # values is a list of the sample values for this column
-        if False and column_name != 'PRI_Reported Brand/Product Name':  # For testing
+    for column_name, values in data_dict.items():  # values is a list of the values for this column
+        if False and not column_name.startswith("L"):  # For testing
             continue
         if not len(values):
             logger.critical(f"There is no data in '{input_path+input_query}'.")
@@ -482,7 +533,7 @@ if __name__ == "__main__":
                 longest_string = max(non_null_values, key=len)
                 if longest_string and len(longest_string) > max_longest_string:
                     # This string is really long and won't display nicely ... so adjust, for example:
-                    # I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
+                    #   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
                     # Will be replaced with:
                     # I'm u...(actual length is 173 characters)...oset.
                     placeholder = f"...(actual length is {len(longest_string)} characters)..."
@@ -531,7 +582,7 @@ if __name__ == "__main__":
             detail_df["value"] = [x[0] for x in most_common_list]
             detail_df["count"] = [x[1] for x in most_common_list]
             detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
-            # detail_df["histogram"] = [BLACK_SQUARE * (1 + int(x[1] * 100 / row_count)) for x in most_common_list]
+            detail_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list]
             detail_dict[column_name] = detail_df
         else:
             logger.warning(f"Column '{column_name}' is empty.")
@@ -547,23 +598,23 @@ if __name__ == "__main__":
             pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
             pattern_df["count"] = [x[1] for x in most_common_pattern_list]
             pattern_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_pattern_list]
-            # pattern_df["histogram"] = [BLACK_SQUARE * (1 + int(x[1] * 100 / row_count)) for x in most_common_pattern_list]
+            pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
             values = pd.Series(values)
             plot_data = values.value_counts(normalize=True)
             if len(plot_data) >= PLOT_MIN_VALUES:
-                logger.debug("Creating a distribution plot ...")
+                logger.debug("Creating a histogram plot ...")
                 sns.set_theme()
                 sns.set(font_scale=PLOT_FONT_SCALE)
                 g = sns.displot(values)
-                plot_output_path = tempdir_path / f"{column_name}.distribution.png"
+                plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 g.set_axis_labels(column_name, COUNT, labelpad=10)
                 g.figure.set_size_inches(PLOT_SIZE_X, PLOT_SIZE_Y)
                 g.ax.margins(.15)
                 g.savefig(plot_output_path)
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
-                distribution_plot_list.append(column_name)
+                histogram_plot_list.append(column_name)
             if len(non_null_values) > PLOT_MIN_VALUES:
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -627,11 +678,11 @@ if __name__ == "__main__":
             if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
                 continue
             column_name = sheet_name[:len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
-            if column_name in distribution_plot_list:
+            if column_name in histogram_plot_list:
                 target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
                 workbook.create_sheet(target_sheet_name, sheet_number+1)
                 worksheet = workbook.worksheets[sheet_number+1]
-                image_path = tempdir_path / (column_name + ".distribution.png")
+                image_path = tempdir_path / (column_name + ".histogram.png")
                 logger.info(f"Adding {image_path} to {output_file} as sheet {target_sheet_name} ...")
                 image = openpyxl.drawing.image.Image(image_path)
                 image.anchor = "A1"
@@ -648,18 +699,18 @@ if __name__ == "__main__":
                 worksheet.add_image(image)
                 sheet_number += 1
 
-        # Size a histogram column for each worksheet which contains the ranks of values or patterns
-        for i, sheet_name in enumerate(workbook.sheetnames):
-            if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
-                worksheet = workbook.worksheets[i]
-                worksheet[f'E1'] = "Histogram"
-                for row_number in range(2, worksheet.max_row+1):
-                    value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
-                    bar_representation = "█" * round(value_to_convert)
-                    worksheet[f'E{row_number}'] = bar_representation
-                # And set some visual formatting while we are here
-                worksheet.column_dimensions['B'].width = 25
-                # worksheet.column_dimensions['C'].number_format = "0.0"
+        # # Size a histogram column for each worksheet which contains the ranks of values or patterns
+        # for i, sheet_name in enumerate(workbook.sheetnames):
+        #     if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
+        #         worksheet = workbook.worksheets[i]
+        #         worksheet[f'E1'] = "Histogram"
+        #         for row_number in range(2, worksheet.max_row+1):
+        #             value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
+        #             bar_representation = "█" * round(value_to_convert)
+        #             worksheet[f'E{row_number}'] = bar_representation
+        #         # And set some visual formatting while we are here
+        #         worksheet.column_dimensions['B'].width = 25
+        #         # worksheet.column_dimensions['C'].number_format = "0.0"
 
         # Formatting for the summary sheet
         worksheet = workbook.worksheets[0]
@@ -679,59 +730,54 @@ if __name__ == "__main__":
         logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
 
 
-    OPEN, CLOSE = "{", "}"
-
-    def make_html_header(title: str) -> str:
-        return f"""
-        <!DOCTYPE html>
-        <html lang="en-US">
-            <head>
-            <meta charset="utf-8">
-            <title>Exploratory Data Analysis for {title}</title>
-            <style>
-                html {OPEN}
-                    font-family: monospace;
-                    font-size: smaller;
-                {CLOSE}
-            </style>
-            </head>
-            <body>
-            <a href="../{root_output_file.name}">Home</a>
-        """
-
-
-    def make_html_footer() -> str:
-        return f"""
-                </body>
-            </html>
-        """
-
-
     if is_html_output:
-        root_output_file = (target_dir / f"analysis.html")
-        columns_dir = target_dir / "columns"
-        try:
-            os.rmdir(columns_dir)
-        except FileNotFoundError:
-            pass
-        os.makedirs(columns_dir, exist_ok=True)
+        root_output_dir = tempdir_path / "analysis"
+        columns_dir = root_output_dir / "columns"
+        images_dir = root_output_dir / "images"
+        os.makedirs(columns_dir)
+        os.makedirs(images_dir)
+        # Move images
+        for _, _, files in tempdir_path.walk():
+            for file in files:
+                os.rename(tempdir_path / file, images_dir / file)
+            break
         # Generate a detail page, and optionally a pattern page and diagrams, for each column
         for column_name, detail_df in detail_dict.items():
             logger.debug(f"Examining column '{column_name}' ...")
             target_file = columns_dir / (column_name + DETAIL_ABBR + ".html")
             logger.info(f"Writing detail for column '{column_name}' to '{target_file}' ...")
             with open(target_file, "w") as writer:
-                writer.write(make_html_header(f"Exploratory Data Analysis for column: {column_name}"))
-                writer.write(detail_df.to_html(justify="center", na_rep="", border=1))
+                writer.write(make_html_header(f"Exploratory Data Analysis for column: {column_name}", root_output_file=root_output_dir))
+                writer.write(f"<h1>Detail analysis for column '{column_name}'</h1>")
+                writer.write(f"<h2>Value frequency</h2>")
+                writer.write(detail_df.to_html(justify="center", na_rep="", index=False))
+                if column_name in pattern_dict:
+                    logger.info(f"Writing pattern information for string column '{column_name}' to '{target_file}' ...")
+                    writer.write(f"<h2>Pattern frequency</h2>")
+                    pattern_df = pattern_dict[column_name]
+                    writer.write(pattern_df.to_html(justify="center", na_rep="", index=False))
+                if column_name in histogram_plot_list:
+                    logger.info(f"Adding histogram plot for column '{column_name}' to '{target_file}' ...")
+                    writer.write(f"<h2>Histogram</h2>")
+                    writer.write(f'<img src="../images/{column_name}.histogram.png" alt = "Histogram for column :{column_name}:">')
+                if column_name in box_plot_list:
+                    logger.info(f"Adding box plots for column '{column_name}' to '{target_file}' ...")
+                    writer.write(f"<h2>Box plots</h2>")
+                    writer.write(f'<img src="../images/{column_name}.box.png" alt = "Box plots for column :{column_name}:">')
                 writer.write(make_html_footer())
-            if column_name in pattern_dict:
-                continue
-                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + PATTERN_ABBR
-                logger.info(f"Writing pattern information for string column '{column_name}' to sheet '{target_sheet_name}' ...")
-                pattern_df = pattern_dict[column_name]
-                pattern_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
-        with open(root_output_file, "w") as writer:
+        with open(root_output_dir / "analysis.html", "w") as writer:
+            logger.info("Writing summary ...")
             writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
-            writer.write(result_df.to_html(justify="center", na_rep="", border=1))
+            # Replace column names in summary dataframe with URL links
+            replacement_list = [f'<a href="columns/{x} det.html">{x}</a>' for x in result_df.index]
+            replacement_dict = dict(zip(result_df.index, replacement_list))
+            result_df = result_df.rename(index=replacement_dict)
+            writer.write(result_df.to_html(justify="center", na_rep="", escape=False))
             writer.write(make_html_footer())
-
+        output_file = shutil.make_archive(
+            base_name=target_dir / "analysis",
+            format="zip",
+            root_dir=tempdir_path,
+            base_dir=".",
+        )
+        logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
