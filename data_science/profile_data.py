@@ -9,6 +9,8 @@ import re
 from statistics import mean, quantiles, stdev
 import sys
 import tempfile
+
+import numpy as np
 # Imports above are standard Python
 # Imports below are 3rd-party
 from argparse_range import range_action
@@ -34,6 +36,7 @@ NUMBER, DATETIME, STRING = "NUMBER", "DATETIME", "STRING"
 DEFAULT_MAX_DETAIL_VALUES = 35
 DETAIL_ABBR = " det"
 # When analyzing the patterns of a string column
+DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
 DEFAULT_MAX_PATTERN_LENGTH = 50
 PATTERN_ABBR = " pat"
 # Don't plot distributions/boxes if there are fewer than this number of distinct values
@@ -47,6 +50,9 @@ PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
 PLOT_FONT_SCALE = 0.75
 # Good character for spreadsheet-embedded histograms U+25A0
 BLACK_SQUARE = "■"
+# Output can be to Excel or HTML
+EXCEL = "EXCEL"
+HTML = "HTML"
 
 DATATYPE_MAPPING_DICT = {
     "BIGINT": NUMBER,
@@ -190,28 +196,11 @@ def get_pattern(l: list) -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Profile the data in a database or CSV file. Generates an analysis consisting of an Excel workbook and (optionally) one or more images. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else.')
+        description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else.')
 
     parser.add_argument('input',
-                        metavar="/path/to/input_data_file.csv | query-against-database")
-    parser.add_argument('--db-host-name',
-                        metavar="HOST_NAME",
-                        help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
-    parser.add_argument('--db-port-number',
-                        metavar="PORT_NUMBER",
-                        help="Overrides PORT_NUMBER environment variable. Ignored when getting data from a file.")
-    parser.add_argument('--db-name',
-                        metavar="DATABASE_NAME",
-                        help="Overrides DATABASE_NAME environment variable. Ignored when getting data from a file.")
-    parser.add_argument('--db-user-name',
-                        metavar="USER_NAME",
-                        help="Overrides USER_NAME environment variable. Ignored when getting data from a file.")
-    parser.add_argument('--db-password',
-                        metavar="PASSWORD",
-                        help="Overrides PASSWORD environment variable. Ignored when getting data from a file.")
-    parser.add_argument('--environment-file',
-                        metavar="/path/to/file",
-                        help="An additional source of database connection information. Overrides environment settings.")
+                        metavar="/path/to/input_data_file.csv | query-against-database",
+                        help="An example query is 'select a, b, c from t where x>7'.")
     parser.add_argument('--header-lines',
                         type=int,
                         metavar="NUM",
@@ -235,14 +224,46 @@ if __name__ == "__main__":
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_MAX_PATTERN_LENGTH,
                         help=f"When segregating strings into patterns leave untouched strings of length greater than this, default is {DEFAULT_MAX_PATTERN_LENGTH}.")
-    parser.add_argument('--output-dir',
+    parser.add_argument('--max-longest-string',
+                        type=int,
+                        metavar="NUM",
+                        action=range_action(50, sys.maxsize),
+                        default=DEFAULT_LONGEST_LONGEST,
+                        help=f"When displaying long strings show a summary if string exceeds this length, default is {DEFAULT_LONGEST_LONGEST}.")
+    parser.add_argument('--target-dir',
                         metavar="/path/to/dir",
                         default=Path.cwd(),
                         help="Default is the current directory. Will make intermediate directories as necessary.")
+    parser.add_argument('--output-excel',
+                        action='store_true',
+                        default=False,
+                        help="Default is HTML only.")
+    parser.add_argument('--output-html',
+                        action='store_true',
+                        default=True,
+                        help="Default is HTML only.")
+    parser.add_argument('--db-host-name',
+                        metavar="HOST_NAME",
+                        help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
+    parser.add_argument('--db-port-number',
+                        metavar="PORT_NUMBER",
+                        help="Overrides PORT_NUMBER environment variable. Ignored when getting data from a file.")
+    parser.add_argument('--db-name',
+                        metavar="DATABASE_NAME",
+                        help="Overrides DATABASE_NAME environment variable. Ignored when getting data from a file.")
+    parser.add_argument('--db-user-name',
+                        metavar="USER_NAME",
+                        help="Overrides USER_NAME environment variable. Ignored when getting data from a file.")
+    parser.add_argument('--db-password',
+                        metavar="PASSWORD",
+                        help="Overrides PASSWORD environment variable. Ignored when getting data from a file.")
+    parser.add_argument('--environment-file',
+                        metavar="/path/to/file",
+                        help="An additional source of database connection information. Overrides environment settings.")
 
     logging_group = parser.add_mutually_exclusive_group()
-    logging_group.add_argument('-v', '--verbose', action='store_true')
-    logging_group.add_argument('-t', '--terse', action='store_true')
+    logging_group.add_argument('--verbose', action='store_true')
+    logging_group.add_argument('--terse', action='store_true')
 
     args = parser.parse_args()
     if args.input.endswith(C.CSV_EXTENSION):
@@ -264,16 +285,19 @@ if __name__ == "__main__":
     sample_rows_file = args.sample_rows_file
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
-    output_dir = Path(args.output_dir)
+    max_longest_string = args.max_longest_string
+    is_html_output = args.output_html
+    is_excel_output = args.output_excel
+    target_dir = Path(args.target_dir)
 
     environment_settings_dict = {
         **os.environ,
         **dotenv_values(environment_file),
     }
-    if not output_dir.parent.exists():
+    if not target_dir.parent.exists():
         parser.error("Directory '{output_dir.parent}' does not exist.")
     else:
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
 
     if input_query:
         # Verify we have the information we need to connect to the database
@@ -454,17 +478,31 @@ if __name__ == "__main__":
 
             if datatype == STRING:
                 # Longest & shortest
-                column_dict[LONGEST] = max(non_null_values, key=len)
-                column_dict[SHORTEST] = max(non_null_values, key=len)
+                column_dict[SHORTEST] = min(non_null_values, key=len)
+                longest_string = max(non_null_values, key=len)
+                if longest_string and len(longest_string) > max_longest_string:
+                    # This string is really long and won't display nicely ... so adjust, for example:
+                    # I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
+                    # Will be replaced with:
+                    # I'm u...(actual length is 173 characters)...oset.
+                    placeholder = f"...(actual length is {len(longest_string)} characters)..."
+                    prefix = longest_string[:5]
+                    suffix = longest_string[-5:]
+                    longest_string = prefix + placeholder + suffix
+                column_dict[LONGEST] = longest_string
                 # No mean/quartiles/stddev statistics for strings
             elif datatype == NUMBER:
                 # No longest/shortest for numbers and dates
+                column_dict[SHORTEST] = np.nan
+                column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
                 column_dict[MEAN] = mean(non_null_values)
                 column_dict[STDDEV] = stdev(non_null_values)
                 column_dict[PERCENTILE_25TH], column_dict[MEDIAN], column_dict[PERCENTILE_75TH] = quantiles(non_null_values)
             elif datatype == DATETIME:
                 # No longest/shortest for numbers and dates
+                column_dict[SHORTEST] = np.nan
+                column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
                 values_as_epoch_seconds = [x.timestamp() for x in non_null_values]
                 column_dict[MEAN] = datetime.fromtimestamp(mean(values_as_epoch_seconds))
@@ -558,82 +596,142 @@ if __name__ == "__main__":
 
     # Convert the summary_dict dictionary of dictionaries to a DataFrame
     result_df = pd.DataFrame.from_dict(summary_dict, orient='index')
-    # And write it to a worksheet
-    logger.info("Writing summary ...")
-    output_file = (output_dir / f"analysis{C.EXCEL_EXTENSION}")
-    writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
-    result_df.to_excel(writer, sheet_name="Summary")
-    # And generate a detail sheet, and optionally a pattern sheet, for each column
-    for column_name, detail_df in detail_dict.items():
-        logger.debug(f"Examining column '{column_name}' ...")
-        target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + DETAIL_ABBR
-        logger.info(f"Writing detail for column '{column_name}' to sheet '{target_sheet_name}' ...")
-        detail_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
-        if column_name in pattern_dict:
-            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + PATTERN_ABBR
-            logger.info(f"Writing pattern information for string column '{column_name}' to sheet '{target_sheet_name}' ...")
-            pattern_df = pattern_dict[column_name]
-            pattern_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
-    writer.close()
 
-    # Add the plots and size bars to the Excel file
-    workbook = openpyxl.load_workbook(output_file)
+    # Output
+    if is_excel_output:
+        logger.info("Writing summary ...")
+        output_file = (target_dir / f"analysis{C.EXCEL_EXTENSION}")
+        writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
+        result_df.to_excel(writer, sheet_name="Summary")
+        # And generate a detail sheet, and optionally a pattern sheet and diagrams, for each column
+        for column_name, detail_df in detail_dict.items():
+            logger.debug(f"Examining column '{column_name}' ...")
+            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + DETAIL_ABBR
+            logger.info(f"Writing detail for column '{column_name}' to sheet '{target_sheet_name}' ...")
+            detail_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
+            if column_name in pattern_dict:
+                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + PATTERN_ABBR
+                logger.info(f"Writing pattern information for string column '{column_name}' to sheet '{target_sheet_name}' ...")
+                pattern_df = pattern_dict[column_name]
+                pattern_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
+        writer.close()
 
-    # Plots
-    # Look for sheet names corresponding to the plot filename
-    sheet_number = -1
-    for sheet_name in workbook.sheetnames:
-        sheet_number += 1
-        if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
-            continue
-        column_name = sheet_name[:len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
-        if column_name in distribution_plot_list:
-            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
-            workbook.create_sheet(target_sheet_name, sheet_number+1)
-            worksheet = workbook.worksheets[sheet_number+1]
-            image_path = tempdir_path / (column_name + ".distribution.png")
-            logger.info(f"Adding {image_path} to {output_file} after sheet {sheet_name} ...")
-            image = openpyxl.drawing.image.Image(image_path)
-            image.anchor = "A1"
-            worksheet.add_image(image)
+        # Add the plots and size bars to the Excel file
+        workbook = openpyxl.load_workbook(output_file)
+
+        # Plots
+        # Look for sheet names corresponding to the plot filename
+        sheet_number = -1
+        for sheet_name in workbook.sheetnames:
             sheet_number += 1
-        if column_name in box_plot_list:
-            target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " box"
-            workbook.create_sheet(target_sheet_name, sheet_number+1)
-            worksheet = workbook.worksheets[sheet_number+1]
-            image_path = tempdir_path / (column_name + ".box.png")
-            logger.info(f"Adding {image_path} to {output_file} after sheet {sheet_name} ...")
-            image = openpyxl.drawing.image.Image(image_path)
-            image.anchor = "A1"
-            worksheet.add_image(image)
-            sheet_number += 1
+            if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
+                continue
+            column_name = sheet_name[:len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
+            if column_name in distribution_plot_list:
+                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
+                workbook.create_sheet(target_sheet_name, sheet_number+1)
+                worksheet = workbook.worksheets[sheet_number+1]
+                image_path = tempdir_path / (column_name + ".distribution.png")
+                logger.info(f"Adding {image_path} to {output_file} as sheet {target_sheet_name} ...")
+                image = openpyxl.drawing.image.Image(image_path)
+                image.anchor = "A1"
+                worksheet.add_image(image)
+                sheet_number += 1
+            if column_name in box_plot_list:
+                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " box"
+                workbook.create_sheet(target_sheet_name, sheet_number+1)
+                worksheet = workbook.worksheets[sheet_number+1]
+                image_path = tempdir_path / (column_name + ".box.png")
+                logger.info(f"Adding {image_path} to {output_file} as sheet {target_sheet_name} ...")
+                image = openpyxl.drawing.image.Image(image_path)
+                image.anchor = "A1"
+                worksheet.add_image(image)
+                sheet_number += 1
 
-    # Size a histogram column for each worksheet which contains the ranks of values or patterns
-    for i, sheet_name in enumerate(workbook.sheetnames):
-        if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
-            worksheet = workbook.worksheets[i]
-            worksheet[f'E1'] = "Histogram"
-            for row_number in range(2, worksheet.max_row+1):
-                value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
-                bar_representation = "█" * round(value_to_convert)
-                worksheet[f'E{row_number}'] = bar_representation
-            # And set some visual formatting while we are here
-            worksheet.column_dimensions['B'].width = 25
-            # worksheet.column_dimensions['C'].number_format = "0.0"
+        # Size a histogram column for each worksheet which contains the ranks of values or patterns
+        for i, sheet_name in enumerate(workbook.sheetnames):
+            if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
+                worksheet = workbook.worksheets[i]
+                worksheet[f'E1'] = "Histogram"
+                for row_number in range(2, worksheet.max_row+1):
+                    value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
+                    bar_representation = "█" * round(value_to_convert)
+                    worksheet[f'E{row_number}'] = bar_representation
+                # And set some visual formatting while we are here
+                worksheet.column_dimensions['B'].width = 25
+                # worksheet.column_dimensions['C'].number_format = "0.0"
 
-    # Formatting for the summary sheet
-    worksheet = workbook.worksheets[0]
-    worksheet.column_dimensions['A'].width = 25  # Column names
-    worksheet.column_dimensions['G'].width = 15  # Most common value
-    worksheet.column_dimensions['I'].width = 15  # Largest value
-    worksheet.column_dimensions['J'].width = 15  # Smallest value
-    worksheet.column_dimensions['K'].width = 15  # Longest value
+        # Formatting for the summary sheet
+        worksheet = workbook.worksheets[0]
+        worksheet.column_dimensions['A'].width = 25  # Column names
+        worksheet.column_dimensions['G'].width = 15  # Most common value
+        worksheet.column_dimensions['I'].width = 15  # Largest value
+        worksheet.column_dimensions['J'].width = 15  # Smallest value
+        worksheet.column_dimensions['K'].width = 15  # Longest value
 
-    for row in range(1, worksheet.max_row+1):
-        worksheet.cell(row=row, column=1).alignment = Alignment(horizontal='right')
-    for row in range(1, worksheet.max_row+1):
-        for col in range(1, 17):
-            worksheet.cell(row=row, column=col).border = Border(outline=Side(border_style=borders.BORDER_THICK, color='FFFFFFFF'))
+        for row in range(1, worksheet.max_row+1):
+            worksheet.cell(row=row, column=1).alignment = Alignment(horizontal='right')
+        for row in range(1, worksheet.max_row+1):
+            for col in range(1, 17):
+                worksheet.cell(row=row, column=col).border = Border(outline=Side(border_style=borders.BORDER_THICK, color='FFFFFFFF'))
 
-    workbook.save(output_file)
-    logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
+        workbook.save(output_file)
+        logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
+
+
+    OPEN, CLOSE = "{", "}"
+
+    def make_html_header(title: str) -> str:
+        return f"""
+        <!DOCTYPE html>
+        <html lang="en-US">
+            <head>
+            <meta charset="utf-8">
+            <title>Exploratory Data Analysis for {title}</title>
+            <style>
+                html {OPEN}
+                    font-family: monospace;
+                    font-size: smaller;
+                {CLOSE}
+            </style>
+            </head>
+            <body>
+            <a href="../{root_output_file.name}">Home</a>
+        """
+
+
+    def make_html_footer() -> str:
+        return f"""
+                </body>
+            </html>
+        """
+
+
+    if is_html_output:
+        root_output_file = (target_dir / f"analysis.html")
+        columns_dir = target_dir / "columns"
+        try:
+            os.rmdir(columns_dir)
+        except FileNotFoundError:
+            pass
+        os.makedirs(columns_dir, exist_ok=True)
+        # Generate a detail page, and optionally a pattern page and diagrams, for each column
+        for column_name, detail_df in detail_dict.items():
+            logger.debug(f"Examining column '{column_name}' ...")
+            target_file = columns_dir / (column_name + DETAIL_ABBR + ".html")
+            logger.info(f"Writing detail for column '{column_name}' to '{target_file}' ...")
+            with open(target_file, "w") as writer:
+                writer.write(make_html_header(f"Exploratory Data Analysis for column: {column_name}"))
+                writer.write(detail_df.to_html(justify="center", na_rep="", border=1))
+                writer.write(make_html_footer())
+            if column_name in pattern_dict:
+                continue
+                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + PATTERN_ABBR
+                logger.info(f"Writing pattern information for string column '{column_name}' to sheet '{target_sheet_name}' ...")
+                pattern_df = pattern_dict[column_name]
+                pattern_df.to_excel(writer, index=False, sheet_name=target_sheet_name)
+        with open(root_output_file, "w") as writer:
+            writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
+            writer.write(result_df.to_html(justify="center", na_rep="", border=1))
+            writer.write(make_html_footer())
+
