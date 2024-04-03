@@ -10,8 +10,6 @@ import shutil
 from statistics import mean, quantiles, stdev
 import sys
 import tempfile
-
-import numpy as np
 # Imports above are standard Python
 # Imports below are 3rd-party
 from argparse_range import range_action
@@ -20,6 +18,7 @@ from dotenv import dotenv_values
 import openpyxl
 from openpyxl.styles import Border, Side, Alignment, Font, borders
 from matplotlib import pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 # Imports below are custom
@@ -246,6 +245,18 @@ def make_html_footer() -> str:
     """
 
 
+def is_data_file(input_argument: str) -> bool:
+    """
+    Use the text of the input (select statement or file name) to determine if this is a file or a select statement
+    :param input_argument: what the user provided
+    :return: True if we think this is a data file, else False
+    """
+    for suffix in ".csv", ".dat", ".txt", ".dsv":
+        if input_argument.lower().endswith(suffix):
+            return True
+    return False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
@@ -259,6 +270,10 @@ if __name__ == "__main__":
                         action=range_action(1, sys.maxsize),
                         default=0,
                         help="When reading from a file specifies the number of rows to skip UNTIL the header row. Ignored when getting data from a database. Default is 0.")
+    parser.add_argument('--delimiter',
+                        metavar="CHAR",
+                        default=",",
+                        help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database.")
     parser.add_argument('--sample-rows-file',
                         type=int,
                         metavar="NUM",
@@ -313,7 +328,7 @@ if __name__ == "__main__":
     logging_group.add_argument('--terse', action='store_true')
 
     args = parser.parse_args()
-    if args.input.endswith(C.CSV_EXTENSION):
+    if is_data_file(args.input):
         input_path = Path(args.input)
         input_query = ""
     else:
@@ -329,6 +344,7 @@ if __name__ == "__main__":
     else:
         environment_file = ""
     header_lines = args.header_lines
+    delimiter = args.delimiter
     sample_rows_file = args.sample_rows_file
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
@@ -431,7 +447,7 @@ if __name__ == "__main__":
         else:
             ratio = 1  # Include all rows
         with open(input_path, newline="", encoding="utf-8") as csvfile:
-            csvreader = csv.DictReader(csvfile)
+            csvreader = csv.DictReader(csvfile, delimiter=delimiter)
             for i, row in enumerate(csvreader, 1):
                 if i <= header_lines:
                     continue
@@ -599,18 +615,18 @@ if __name__ == "__main__":
             values = pd.Series(values)
             plot_data = values.value_counts(normalize=True)
             if len(plot_data) >= PLOT_MIN_VALUES:
-                logger.debug("Creating a histogram plot ...")
-                sns.set_theme()
-                sns.set(font_scale=PLOT_FONT_SCALE)
-                g = sns.displot(values)
+                logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
-                g.set_axis_labels(column_name, COUNT, labelpad=10)
-                g.figure.set_size_inches(PLOT_SIZE_X, PLOT_SIZE_Y)
-                g.ax.margins(.15)
-                g.savefig(plot_output_path)
+                plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
+                ax = values.plot.hist(bins=min(20, len(values)))
+                ax.set_xlabel(column_name)
+                ax.set_ylabel("Count")
+                plt.savefig(plot_output_path)
+                plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
             if len(non_null_values) > PLOT_MIN_VALUES:
+                logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
                     nrows=2,
