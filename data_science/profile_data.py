@@ -695,7 +695,7 @@ if __name__ == "__main__":
                 workbook.create_sheet(target_sheet_name, sheet_number+1)
                 worksheet = workbook.worksheets[sheet_number+1]
                 image_path = tempdir_path / (column_name + ".histogram.png")
-                logger.info(f"Adding {image_path} to {output_file} as sheet {target_sheet_name} ...")
+                logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
                 image = openpyxl.drawing.image.Image(image_path)
                 image.anchor = "A1"
                 worksheet.add_image(image)
@@ -705,7 +705,7 @@ if __name__ == "__main__":
                 workbook.create_sheet(target_sheet_name, sheet_number+1)
                 worksheet = workbook.worksheets[sheet_number+1]
                 image_path = tempdir_path / (column_name + ".box.png")
-                logger.info(f"Adding {image_path} to {output_file} as sheet {target_sheet_name} ...")
+                logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
                 image = openpyxl.drawing.image.Image(image_path)
                 image.anchor = "A1"
                 worksheet.add_image(image)
