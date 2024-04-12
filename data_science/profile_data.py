@@ -40,7 +40,7 @@ DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
 DEFAULT_MAX_PATTERN_LENGTH = 50
 PATTERN_ABBR = " pat"
 # Don't plot histograms/boxes if there are fewer than this number of distinct values
-PLOT_MIN_VALUES = 6
+PLOT_MIN_VALUES = 8
 # Categorical plots should have no more than this number of distinct values
 CATEGORICAL_PLOT_MAX_VALUES = 5
 # When determining the datatype of a CSV column examine (up to) this number of records
@@ -48,6 +48,7 @@ DATATYPE_SAMPLING_SIZE = 500
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
 PLOT_FONT_SCALE = 0.75
+HISTOGRAM, BOX, PIE = "histogram", "box", "pie"
 # Good character for spreadsheet-embedded histograms U+25A0
 BLACK_SQUARE = "■"
 # Output can be to Excel or HTML
@@ -255,6 +256,22 @@ def is_data_file(input_argument: str) -> bool:
         if input_argument.lower().endswith(suffix):
             return True
     return False
+
+
+def insert_image(image_type: str, sheet_number: int) -> None:
+    """
+    Add a image/plot to a new sheet
+    :image_type: HISTOGRAM, BOX, or PIE
+    :sheet_number: where the image should be added
+    """
+    target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH - 4) + " " + image_type[:3]
+    workbook.create_sheet(target_sheet_name, sheet_number)
+    worksheet = workbook.worksheets[sheet_number]
+    image_path = tempdir_path / (f"{column_name}.{image_type}.png")
+    logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
+    image = openpyxl.drawing.image.Image(image_path)
+    image.anchor = "A1"
+    worksheet.add_image(image)
 
 
 if __name__ == "__main__":
@@ -503,6 +520,7 @@ if __name__ == "__main__":
     # To keep track of which columns have histogram plots
     histogram_plot_list = list()
     box_plot_list = list()
+    pie_plot_list = list()
 
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
@@ -598,6 +616,9 @@ if __name__ == "__main__":
         else:
             logger.warning(f"Column '{column_name}' is empty.")
 
+        # Produce visuals
+        values = pd.Series(values)
+        plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
         if datatype == STRING and row_count:
             pattern_counter = get_pattern(non_null_values)
@@ -612,8 +633,6 @@ if __name__ == "__main__":
             pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
-            values = pd.Series(values)
-            plot_data = values.value_counts(normalize=True)
             if len(plot_data) >= PLOT_MIN_VALUES:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
@@ -655,7 +674,18 @@ if __name__ == "__main__":
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
             else:
-                logger.debug("Not enough distinct values to create plots.")
+                logger.debug("Not enough distinct values to create histograms or boxplots.")
+        if len(plot_data) < PLOT_MIN_VALUES:
+            logger.info("Creating pie plot ...")
+            plot_output_path = tempdir_path / f"{column_name}.pie.png"
+            s = values.value_counts()
+            fig, ax = plt.subplots()
+            ax.pie(s, labels=s.index, autopct="%1.1f%%")
+            ax.set_title(column_name)
+            plt.savefig(plot_output_path)
+            plt.close('all')  # Save memory
+            logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
+            pie_plot_list.append(column_name)
 
     # Convert the summary_dict dictionary of dictionaries to a DataFrame
     result_df = pd.DataFrame.from_dict(summary_dict, orient='index')
@@ -691,38 +721,17 @@ if __name__ == "__main__":
                 continue
             column_name = sheet_name[:-len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
             if column_name in histogram_plot_list:
-                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " dst"
-                workbook.create_sheet(target_sheet_name, sheet_number+1)
-                worksheet = workbook.worksheets[sheet_number+1]
-                image_path = tempdir_path / (column_name + ".histogram.png")
-                logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
-                image = openpyxl.drawing.image.Image(image_path)
-                image.anchor = "A1"
-                worksheet.add_image(image)
                 sheet_number += 1
+                insert_image(HISTOGRAM, sheet_number)
+                histogram_plot_list.remove(column_name)
             if column_name in box_plot_list:
-                target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH-4) + " box"
-                workbook.create_sheet(target_sheet_name, sheet_number+1)
-                worksheet = workbook.worksheets[sheet_number+1]
-                image_path = tempdir_path / (column_name + ".box.png")
-                logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
-                image = openpyxl.drawing.image.Image(image_path)
-                image.anchor = "A1"
-                worksheet.add_image(image)
                 sheet_number += 1
-
-        # # Size a histogram column for each worksheet which contains the ranks of values or patterns
-        # for i, sheet_name in enumerate(workbook.sheetnames):
-        #     if sheet_name.endswith(DETAIL_ABBR) or sheet_name.endswith(PATTERN_ABBR):
-        #         worksheet = workbook.worksheets[i]
-        #         worksheet[f'E1'] = "Histogram"
-        #         for row_number in range(2, worksheet.max_row+1):
-        #             value_to_convert = worksheet[f'D{row_number}'].value  # C = 3rd column, convert from percentage
-        #             bar_representation = "█" * round(value_to_convert)
-        #             worksheet[f'E{row_number}'] = bar_representation
-        #         # And set some visual formatting while we are here
-        #         worksheet.column_dimensions['B'].width = 25
-        #         # worksheet.column_dimensions['C'].number_format = "0.0"
+                insert_image(BOX, sheet_number)
+                box_plot_list.remove(column_name)
+            if column_name in pie_plot_list:
+                sheet_number += 1
+                insert_image(PIE, sheet_number)
+                pie_plot_list.remove(column_name)
 
         # Formatting for the summary sheet
         worksheet = workbook.worksheets[0]
