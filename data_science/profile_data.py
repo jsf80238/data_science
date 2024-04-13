@@ -207,30 +207,40 @@ def make_html_header(title: str, root_output_file: str = None) -> str:
     :return: <!DOCTYPE html> <html lang="en-US"> <head> ...
     """
     if root_output_file:
-        home_link = f'<a href="../{root_output_file.name}">Home</a>'
+        home_link = f'<a href="../{root_output_file.name}.html">Home</a>'
     else:
         home_link = ""
+    if input_query:
+        title = input_query
+    elif input_path:
+        title = input_path.name
+    else:
+        raise Exception("Programming error")
     return f"""
     <!DOCTYPE html>
     <html lang="en-US">
         <head>
         <meta charset="utf-8">
-        <title>Exploratory Data Analysis for {title}</title>
+        <title>Exploratory Data Analysis</title>
         <style>
             html {OPEN}
                 font-family: monospace;
                 font-size: smaller;
             {CLOSE}
-            h1, h2 {OPEN}
+            h1, h2, h3, p, img, div {OPEN}
                 text-align: center;
             {CLOSE}
             table, tr, td {OPEN}
                 border: 1px solid #000;
+                margin-left: auto;
+                margin-right: auto;
             {CLOSE}
         </style>
         </head>
         <body>
-        {home_link}
+            <h1>Exploratory Data Analysis for {title}</h1>
+            <p>{home_link}</p>
+            <div>
     """
 
 
@@ -241,6 +251,7 @@ def make_html_footer() -> str:
     :return: </body> </html>
     """
     return f"""
+            </div>
             </body>
         </html>
     """
@@ -717,21 +728,20 @@ if __name__ == "__main__":
         sheet_number = -1
         for sheet_name in workbook.sheetnames:
             sheet_number += 1
+            if sheet_name.endswith(DETAIL_ABBR):
+                continue
             if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
                 continue
             column_name = sheet_name[:-len(DETAIL_ABBR)]  # remove " det" from sheet name to get column name
             if column_name in histogram_plot_list:
                 sheet_number += 1
                 insert_image(HISTOGRAM, sheet_number)
-                histogram_plot_list.remove(column_name)
             if column_name in box_plot_list:
                 sheet_number += 1
                 insert_image(BOX, sheet_number)
-                box_plot_list.remove(column_name)
             if column_name in pie_plot_list:
                 sheet_number += 1
                 insert_image(PIE, sheet_number)
-                pie_plot_list.remove(column_name)
 
         # Formatting for the summary sheet
         worksheet = workbook.worksheets[0]
@@ -769,22 +779,31 @@ if __name__ == "__main__":
             logger.info(f"Writing detail for column '{column_name}' to '{target_file}' ...")
             with open(target_file, "w") as writer:
                 writer.write(make_html_header(f"Exploratory Data Analysis for column: {column_name}", root_output_file=root_output_dir))
-                writer.write(f"<h1>Detail analysis for column '{column_name}'</h1>")
-                writer.write(f"<h2>Value frequency</h2>")
+                writer.write(f"<h2>Detail analysis for column '{column_name}'</h2>")
+                writer.write(f"<hr>")
+                writer.write(f"<h3>Value frequency</h3>")
                 writer.write(detail_df.to_html(justify="center", na_rep="", index=False))
                 if column_name in pattern_dict:
                     logger.info(f"Writing pattern information for string column '{column_name}' to '{target_file}' ...")
-                    writer.write(f"<h2>Pattern frequency</h2>")
+                    writer.write(f"<hr>")
+                    writer.write(f"<h3>Pattern frequency</h3>")
                     pattern_df = pattern_dict[column_name]
                     writer.write(pattern_df.to_html(justify="center", na_rep="", index=False))
                 if column_name in histogram_plot_list:
                     logger.info(f"Adding histogram plot for column '{column_name}' to '{target_file}' ...")
-                    writer.write(f"<h2>Histogram</h2>")
-                    writer.write(f'<img src="../images/{column_name}.histogram.png" alt = "Histogram for column :{column_name}:">')
+                    writer.write(f"<hr>")
+                    writer.write(f"<h3>Histogram</h3>")
+                    writer.write(f'<img src="../images/{column_name}.histogram.png" alt="Histogram for column :{column_name}:">')
+                if column_name in pie_plot_list:
+                    logger.info(f"Adding pie plot for column '{column_name}' to '{target_file}' ...")
+                    writer.write(f"<hr>")
+                    writer.write(f"<h3>Box plots</h3>")
+                    writer.write(f'<img src="../images/{column_name}.pie.png" alt="Pie plot for column :{column_name}:">')
                 if column_name in box_plot_list:
                     logger.info(f"Adding box plots for column '{column_name}' to '{target_file}' ...")
-                    writer.write(f"<h2>Box plots</h2>")
-                    writer.write(f'<img src="../images/{column_name}.box.png" alt = "Box plots for column :{column_name}:">')
+                    writer.write(f"<hr>")
+                    writer.write(f"<h3>Box plots</h3>")
+                    writer.write(f'<img src="../images/{column_name}.box.png" alt="Box plots for column :{column_name}:">')
                 writer.write(make_html_footer())
         with open(root_output_dir / "analysis.html", "w") as writer:
             logger.info("Writing summary ...")
