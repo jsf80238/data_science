@@ -732,7 +732,7 @@ if __name__ == "__main__":
         sheet_number = -1
         for sheet_name in workbook.sheetnames:
             sheet_number += 1
-            if sheet_name.endswith(DETAIL_ABBR):
+            if not sheet_name.endswith(DETAIL_ABBR):
                 continue
             if sheet_number == 0:  # Skip summary sheet (first sheet, zero-based-index)
                 continue
