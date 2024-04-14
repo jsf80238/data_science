@@ -54,7 +54,7 @@ BLACK_SQUARE = "■"
 EXCEL = "EXCEL"
 HTML = "HTML"
 OPEN, CLOSE = "{", "}"
-
+FILE_BASE_NAME = "profiled_data"
 
 DATATYPE_MAPPING_DICT = {
     "BIGINT": NUMBER,
@@ -708,7 +708,7 @@ if __name__ == "__main__":
     # Output
     if is_excel_output:
         logger.info("Writing summary ...")
-        output_file = (target_dir / f"analysis{C.EXCEL_EXTENSION}")
+        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
         writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
         result_df.to_excel(writer, sheet_name="Summary")
         # And generate a detail sheet, and optionally a pattern sheet and diagrams, for each column
@@ -766,7 +766,7 @@ if __name__ == "__main__":
 
 
     if is_html_output:
-        root_output_dir = tempdir_path / "analysis"
+        root_output_dir = tempdir_path / FILE_BASE_NAME
         columns_dir = root_output_dir / "columns"
         images_dir = root_output_dir / "images"
         os.makedirs(columns_dir)
@@ -809,7 +809,7 @@ if __name__ == "__main__":
                     writer.write(f"<h3>Box plots</h3>")
                     writer.write(f'<img src="../images/{column_name}.box.png" alt="Box plots for column :{column_name}:">')
                 writer.write(make_html_footer())
-        with open(root_output_dir / "analysis.html", "w") as writer:
+        with open(root_output_dir / f"{FILE_BASE_NAME}.html", "w") as writer:
             logger.info("Writing summary ...")
             writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
             # Replace column names in summary dataframe with URL links
@@ -818,8 +818,9 @@ if __name__ == "__main__":
             result_df = result_df.rename(index=replacement_dict)
             writer.write(result_df.to_html(justify="center", na_rep="", escape=False))
             writer.write(make_html_footer())
+        logger.info("Making zip archive ...")
         output_file = shutil.make_archive(
-            base_name=target_dir / "analysis",
+            base_name=target_dir / FILE_BASE_NAME,
             format="zip",
             root_dir=tempdir_path,
             base_dir=".",

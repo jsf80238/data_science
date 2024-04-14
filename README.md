@@ -1,5 +1,5 @@
-# Author
-[Jason Friedman](https://www.linkedin.com/in/jasonfriedmantechnology/) is the author of this code.
+# Jupyter
+[Notebooks](notebooks)
 
 # profile_data.py
 ## Overview
@@ -97,7 +97,7 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
 
 - Download your data.
 - `data_science/python analyze-quality.py ~/Downloads/restaurant-and-market-health-inspections.csv`
-- The results will be an `analysis.xlsx` file in your current directory.
+- View the results from `analysis.xlsx` in your current directory, or the `--target-dir` directory if provided.
 
 ### Results
 The program generates a XLSX file containing multiple sheets:
@@ -110,7 +110,8 @@ The program generates a XLSX file containing multiple sheets:
   - Pie plot, for each column in the data source, but see
 
 > [!TIP]
-> Optionally, using the `--html` command-line argument, will also generate `analysis.zip`.
+> Optionally, use the `--html` command-line argument to also generate `analysis.zip`.
+> 
 > Unzip and point your browser at `analysis.html`.
 
 This is an example summary:
