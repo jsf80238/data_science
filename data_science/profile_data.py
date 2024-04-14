@@ -40,9 +40,8 @@ DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
 DEFAULT_MAX_PATTERN_LENGTH = 50
 PATTERN_ABBR = " pat"
 # Don't plot histograms/boxes if there are fewer than this number of distinct values
-PLOT_MIN_VALUES = 8
-# Categorical plots should have no more than this number of distinct values
-CATEGORICAL_PLOT_MAX_VALUES = 5
+# And don't make pie charts if there are more than this number of distinct values
+DEFAULT_PLOT_VALUES_LIMIT = 8
 # When determining the datatype of a CSV column examine (up to) this number of records
 DATATYPE_SAMPLING_SIZE = 500
 # Plotting visual effects
@@ -312,13 +311,19 @@ if __name__ == "__main__":
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_MAX_DETAIL_VALUES,
-                        help=f"Produce this many of the top/bottom value occurrences, default is {DEFAULT_MAX_DETAIL_VALUES}.")
+                        help=f"Produce this many of the top value occurrences, default is {DEFAULT_MAX_DETAIL_VALUES}.")
     parser.add_argument('--max-pattern-length',
                         type=int,
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_MAX_PATTERN_LENGTH,
                         help=f"When segregating strings into patterns leave untouched strings of length greater than this, default is {DEFAULT_MAX_PATTERN_LENGTH}.")
+    parser.add_argument('--plot-values-limit',
+                        type=int,
+                        metavar="NUM",
+                        action=range_action(1, sys.maxsize),
+                        default=DEFAULT_PLOT_VALUES_LIMIT,
+                        help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {DEFAULT_PLOT_VALUES_LIMIT}.")
     parser.add_argument('--max-longest-string',
                         type=int,
                         metavar="NUM",
@@ -377,6 +382,7 @@ if __name__ == "__main__":
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
+    plot_values_limit = args.plot_values_limit
     is_html_output = args.html
     is_excel_output = True
     target_dir = Path(args.target_dir)
@@ -644,7 +650,7 @@ if __name__ == "__main__":
             pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
-            if len(plot_data) >= PLOT_MIN_VALUES:
+            if len(plot_data) >= plot_values_limit:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
@@ -655,7 +661,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
-            if len(non_null_values) > PLOT_MIN_VALUES:
+            if len(non_null_values) >= plot_values_limit:
                 logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -684,9 +690,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
-            else:
-                logger.debug("Not enough distinct values to create histograms or boxplots.")
-        if len(plot_data) < PLOT_MIN_VALUES:
+        if len(plot_data) < plot_values_limit:
             logger.info("Creating pie plot ...")
             plot_output_path = tempdir_path / f"{column_name}.pie.png"
             s = values.value_counts()
