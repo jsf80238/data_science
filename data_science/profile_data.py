@@ -459,7 +459,7 @@ if __name__ == "__main__":
                 datatype_dict[column_name] = STRING
         # Non-null data is useful for later calculations
         for column_name, values in data_dict.items():
-            non_null_data_dict[column_name] = [x for x in values if x]
+            non_null_data_dict[column_name] = [x for x in values if x is not None]
         # Sometimes the JDBC API returns strings for values its metadata says are dates/datetimes.
         # Convert these as necessary from Python strings to Python datetimes
         for column_name, values in data_dict.items():
@@ -467,7 +467,7 @@ if __name__ == "__main__":
                 # Check the type of the first non-null value
                 if type(non_null_data_dict[column_name][0]) == str:
                     data_dict[column_name] = list(map(lambda x: dateutil.parser.parse(x), data_dict[column_name]))
-                    non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x]
+                    non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
 
     elif input_path:
         # Data is coming from a file
@@ -492,7 +492,7 @@ if __name__ == "__main__":
         # Set best type for each column of data
         for column_name, values in data_dict.items():
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            non_null_list = [x for x in values if x]
+            non_null_list = [x for x in values if x is not None]
             sampled_list = random.sample(non_null_list, min(DATATYPE_SAMPLING_SIZE, len(non_null_list)))
             is_parse_error = False
             for item in sampled_list:
@@ -522,13 +522,18 @@ if __name__ == "__main__":
                         break
                 if not is_parse_error:
                     logger.info(f"Casting column '{column_name}' as a number.")
-                    data_dict[column_name] = list(map(convert_str_to_float, values))
-                    datatype_dict[column_name] = NUMBER
+                    try:
+                        data_dict[column_name] = list(map(convert_str_to_float, values))
+                        datatype_dict[column_name] = NUMBER
+                    except ValueError as e:
+                        logger.warning(e)
+                        logger.info(f"Casting column '{column_name}' as a string.")
+                        datatype_dict[column_name] = STRING
                 else:
                     logger.info(f"Casting column '{column_name}' as a string.")
                     datatype_dict[column_name] = STRING
             # Non-null data is useful for later calculations
-            non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x]
+            non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
 
     # Data has been read into input_df, now process it
     # To temporarily hold plots and html files
