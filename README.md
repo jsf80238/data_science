@@ -119,7 +119,7 @@ The program generates a XLSX file containing multiple sheets:
 > Unzip and point your browser at `analysis.html`.
 
 This is an example summary:
-![Summary](images/Readme/summary.png)
+![Summary](images/readme/summary.png)
 Let's focus on the highlighted cells.
 - C6, C19: these are likely data quality issues. As a percentage of the total data set can be ignored.
 - F2: `serial_number` is unique. Good.
@@ -133,7 +133,7 @@ Let's focus on the highlighted cells.
 Now, details by column.
 #### score
 
-![score.distribution](images/Readme/score.distribution.png)
+![score.distribution](images/readme/score.distribution.png)
 
 - As a first estimate I would have guessed this would look like a Bell curve, perhaps with a bit of [skew](https://www.itl.nist.gov/div898/handbook/eda/section3/eda35b.htm).
 - Instead, we many more scores of 90 than expected and much fewer scores of 89 than expected (and fewer in the 80s than expected).
@@ -143,41 +143,43 @@ Now, details by column.
   - People don't like to eat at restaurants which fail to achieve a A-rating.
   - Restaurant owners, and to a lesser extent restaurant inspectors, strive to avoid anything other than a A-rating. (Image below courtesy of https://la.eater.com/2015/8/19/9178907/la-county-health-department-restaurant-grades-need-overhaul.)
 
-![restaurant_rating_in_window](images/Readme/restaurant_rating_in_window.png)
+![restaurant_rating_in_window](images/readme/restaurant_rating_in_window.png)
 
 #### employee_id
 
-![employee_id.categorical](images/Readme/employee_id.categorical.png)
+![employee_id.categorical](images/readme/employee_id.categorical.png)
 
-![employee_id_detail](images/Readme/employee_id_detail.png)
+![employee_id_detail](images/readme/employee_id_detail.png)
 
 - One employee (EE0000721) among the 143 who performed inspections handled one out of every fourteen inspections. And it was twice as many as the next busiest inspector. Why?
 
 #### activity_date
 
-![activity_date_detail](images/Readme/activity_date_detail.png)
+![activity_date_detail](images/readme/activity_date_detail.png)
 
 - Note the dates with very few inspections (F2, F3, F4 ...). These are Saturdays and Sundays. It makes sense inspectors (city staff) don't work as much on weekends.
 
 #### facility_name
 
-![facility_name_detail](images/Readme/facility_name_detail.png)
+![facility_name_detail](images/readme/facility_name_detail.png)
 
 - Again, "DODGER STADIUM" leads the way. Are there more restaurants in Dodger Stadium than there are Subway restaurants in all of Los Angeles?
 
 #### owner_name
 
-![owner_name_detail](images/Readme/owner_name_detail.png)
+![owner_name_detail](images/readme/owner_name_detail.png)
 
 - Note the yellow-highlighted cells. This looks to be a data-quality issue .. Levy Premium Food listed twice. When added together this would be the top owner, not Ralph's.
 - Note the blue-highlighted cells. Is true there are only 50% more Starbucks than Whole Foods?
 
 #### service_description
 
-![service_description_detail](images/Readme/service_description_detail.png)
+![service_description_detail](images/readme/service_description_detail.png)
 
 - Only 1.65% of inspections were initiated by the owner. Probably makes sense.
 - All inspections are some variation of "routine", apparently.
+
+### More execution examples
 
 ## Potential improvements
 - Check for duplicate data.
