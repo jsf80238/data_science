@@ -21,7 +21,7 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
 
 ### Installation
 - `git clone https://github.com/jsf80238/data_science.git`
-- `cd data_profiling`
+- `cd data_science`
 - `python3 -m venv your_dir`
 - `source your_dir/bin/activate`  # or on Windows `your_dir\Scripts\activate.bat`
 - `pip install -r requirements.txt`
