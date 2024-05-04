@@ -20,6 +20,7 @@ from openpyxl.styles import Border, Side, Alignment, Font, borders
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import seaborn as sns
 # Imports below are custom
 from lib.base import C, Database, Logger, get_line_count
@@ -42,7 +43,7 @@ PATTERN_ABBR = " pat"
 # Don't plot histograms/boxes if there are fewer than this number of distinct values
 # And don't make pie charts if there are more than this number of distinct values
 DEFAULT_PLOT_VALUES_LIMIT = 8
-# When determining the datatype of a CSV column examine (up to) this number of records
+# When determining the datatype of a column examine (up to) this number of records
 DATATYPE_SAMPLING_SIZE = 500
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
@@ -124,6 +125,23 @@ ANALYSIS_LIST = (
     PERCENTILE_75TH,
     STDDEV,
 )
+
+
+def convert_datatype(name: np.dtypes) -> str:
+    """
+    Convert Pandas datatypes to a more generic type
+
+    :param value: the Pandas name
+    :return: one of: NUMBER, DATETIME, STRING
+    """
+    name = str(name)
+    if "date" in name.lower():
+        return DATETIME
+    if "int" in name.lower():
+        return NUMBER
+    if "float" in name.lower():
+        return NUMBER
+    return STRING
 
 
 def convert_str_to_float(value: str) -> float:
@@ -262,7 +280,7 @@ def is_data_file(input_argument: str) -> bool:
     :param input_argument: what the user provided
     :return: True if we think this is a data file, else False
     """
-    for suffix in ".csv", ".dat", ".txt", ".dsv":
+    for suffix in C.PARQUET_EXTENSION.value, C.CSV_EXTENSION.value, ".dat", ".txt", ".dsv":
         if input_argument.lower().endswith(suffix):
             return True
     return False
@@ -301,7 +319,7 @@ if __name__ == "__main__":
                         metavar="CHAR",
                         default=",",
                         help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database.")
-    parser.add_argument('--sample-rows-file',
+    parser.add_argument('--sample-rows',
                         type=int,
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
@@ -378,7 +396,7 @@ if __name__ == "__main__":
         environment_file = ""
     header_lines = args.header_lines
     delimiter = args.delimiter
-    sample_rows_file = args.sample_rows_file
+    sample_rows = args.sample_rows
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
@@ -419,6 +437,7 @@ if __name__ == "__main__":
         logger = Logger().get_logger()
 
     # Now, read the data
+    input_df = None
     data_dict = defaultdict(list)
     # ↑ Keys are column_names, values are a list of values from the data.
     non_null_data_dict = dict()
@@ -472,70 +491,34 @@ if __name__ == "__main__":
     elif input_path:
         # Data is coming from a file
         logger.info(f"Reading from '{input_path}' ...")
-        # Manage sampling, if any
-        # For example, suppose the file contains 100 lines and we want to sample 20 of them.
-        # The ratio is 20/100, or 0.2, and if a random number between 0 and 1 is less than 0.2
-        # then we will include that row.
-        if sample_rows_file:
-            ratio = sample_rows_file / get_line_count(input_path)
+        if input_path.name.endswith(C.PARQUET_EXTENSION.value):
+            input_df = pq.read_table(input_path).to_pandas()
         else:
-            ratio = 1  # Include all rows
-        with open(input_path, newline="", encoding="utf-8") as csvfile:
-            csvreader = csv.DictReader(csvfile, delimiter=delimiter)
-            for i, row in enumerate(csvreader, 1):
-                if i <= header_lines:
-                    continue
-                if ratio >= 1 or random.random() < ratio:
-                    for column_name, value in row.items():
-                        column_name = column_name.replace("/", "_")  # slashes don't work well in paths
-                        data_dict[column_name].append(value)
-        # Set best type for each column of data
-        for column_name, values in data_dict.items():
+            input_df = pd.read_csv(input_path, delimiter=delimiter, header=header_lines)
+        # Sampling requested?
+        if sample_rows:
+            input_df = input_df.sample(sample_rows)
+        # Pandas will automatically attempt to convert data to datetime where possible
+        # It does so poorly, in my experience, so will also try "manually"
+        for column_name in input_df.select_dtypes(include=["object"]).columns:
+            mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+            s = input_df[~mask][column_name]
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            non_null_list = [x for x in values if x is not None]
-            sampled_list = random.sample(non_null_list, min(DATATYPE_SAMPLING_SIZE, len(non_null_list)))
-            is_parse_error = False
-            for item in sampled_list:
-                if len(str(item)) < 6:  # dateutil.parser.parse seems to interpret things like 2.0 as dates
-                    is_parse_error = True
-                    logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
-                    break
+            s = s.sample(min(DATATYPE_SAMPLING_SIZE, s.size))
+            for item in list(s):
                 try:
                     dateutil.parser.parse(item)
                 except:
-                    is_parse_error = True
                     logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
                     break
-            if not is_parse_error:
-                logger.info(f"Casting column '{column_name}' as a datetime.")
-                data_dict[column_name] = list(map(convert_str_to_datetime, values))
-                datatype_dict[column_name] = DATETIME
             else:
-                # Not a datetime, try number
-                is_parse_error = False
-                for item in sampled_list:
-                    try:
-                        float(item)
-                    except ValueError:
-                        is_parse_error = True
-                        logger.debug(f"Cannot cast column '{column_name}' as a number.")
-                        break
-                if not is_parse_error:
-                    logger.info(f"Casting column '{column_name}' as a number.")
-                    try:
-                        data_dict[column_name] = list(map(convert_str_to_float, values))
-                        datatype_dict[column_name] = NUMBER
-                    except ValueError as e:
-                        logger.warning(e)
-                        logger.info(f"Casting column '{column_name}' as a string.")
-                        datatype_dict[column_name] = STRING
-                else:
-                    logger.info(f"Casting column '{column_name}' as a string.")
-                    datatype_dict[column_name] = STRING
-            # Non-null data is useful for later calculations
-            non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
+                logger.info(f"Casting column '{column_name}' as a datetime ...")
+                input_df[column_name] = input_df[column_name].apply(dateutil.parser.parse)
 
     # Data has been read into input_df, now process it
+    if input_df.shape[0] == 0:
+        logger.critical(f"There is no data in '{input_path + input_query}'.")
+        exit()
     # To temporarily hold plots and html files
     tempdir = tempfile.TemporaryDirectory()
     tempdir_path = Path(tempdir.name)
@@ -543,45 +526,50 @@ if __name__ == "__main__":
     histogram_plot_list = list()
     box_plot_list = list()
     pie_plot_list = list()
+    # Standardize column names
+    input_df.columns = [make_sheet_name(x, MAX_SHEET_NAME_LENGTH) for x in input_df.columns]
 
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
-    for column_name, values in data_dict.items():  # values is a list of the values for this column
+    for column_name, datatype in dict(input_df.dtypes).items():
+        values = input_df[column_name]
         if False and not column_name.startswith("L"):  # For testing
             continue
-        if not len(values):
-            logger.critical(f"There is no data in '{input_path+input_query}'.")
-            exit()
-        datatype = datatype_dict[column_name]
         # A list of non-null values are useful for some calculations below
-        non_null_values = non_null_data_dict[column_name]
-        datatype = datatype_dict[column_name]
+        mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+        non_null_values = input_df[~mask][column_name]
         logger.info(f"Working on column '{column_name}' ...")
         column_dict = dict.fromkeys(ANALYSIS_LIST)
         # Row count
-        row_count = len(values)
+        row_count = values.size
         column_dict[ROW_COUNT] = row_count
         # Null
-        null_count = row_count - len(non_null_values)
+        null_count = row_count - non_null_values.size
         column_dict[NULL_COUNT] = null_count
         # Null%
         column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
         # Unique
-        unique_count = len(set(values))
+        unique_count = values.nunique(dropna=False)
         column_dict[UNIQUE_COUNT] = unique_count
         # Unique%
         column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
 
+        # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
+        datatype = convert_datatype(datatype)
+
         if null_count != row_count:
             # Largest & smallest
-            column_dict[LARGEST] = max(non_null_values)
-            column_dict[SMALLEST] = min(non_null_values)
+            column_dict[LARGEST] = non_null_values.max()
+            column_dict[SMALLEST] = non_null_values.min()
 
+            temp = "temp"
             if datatype == STRING:
                 # Longest & shortest
-                column_dict[SHORTEST] = min(non_null_values, key=len)
-                longest_string = max(non_null_values, key=len)
+                input_df[temp] = input_df[column_name].str.len()
+                x = input_df.sort_values([temp], axis=0)
+                column_dict[SHORTEST] = x[column_name].iloc[0]
+                longest_string = x[column_name].iloc[row_count-1]
                 if longest_string and len(longest_string) > max_longest_string:
                     # This string is really long and won't display nicely ... so adjust, for example:
                     #   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
@@ -598,21 +586,23 @@ if __name__ == "__main__":
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = mean(non_null_values)
-                column_dict[STDDEV] = stdev(non_null_values)
-                column_dict[PERCENTILE_25TH], column_dict[MEDIAN], column_dict[PERCENTILE_75TH] = quantiles(non_null_values)
+                column_dict[MEAN] = non_null_values.mean()
+                column_dict[STDDEV] = non_null_values.std()
+                column_dict[PERCENTILE_25TH] = non_null_values.quantile(0.25)
+                column_dict[MEDIAN] = non_null_values.quantile(0.5)
+                column_dict[PERCENTILE_75TH] = non_null_values.quantile(0.75)
             elif datatype == DATETIME:
                 # No longest/shortest for numbers and dates
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                values_as_epoch_seconds = [x.timestamp() for x in non_null_values]
-                column_dict[MEAN] = datetime.fromtimestamp(mean(values_as_epoch_seconds))
-                column_dict[STDDEV] = stdev(
-                    values_as_epoch_seconds) / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
-                twenty_five, fifty, seventy_five = quantiles(values_as_epoch_seconds)
-                column_dict[PERCENTILE_25TH], column_dict[MEDIAN], column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(
-                    twenty_five), datetime.fromtimestamp(fifty), datetime.fromtimestamp(seventy_five)
+                input_df[temp] = input_df[column_name].astype('int64')//1e9
+                column_dict[MEAN] = pd.to_datetime(input_df[temp], unit="s").mean()
+                column_dict[PERCENTILE_25TH] = pd.to_datetime(input_df[temp], unit="s").quantile(0.25)
+                column_dict[MEDIAN] = pd.to_datetime(input_df[temp], unit="s").quantile(0.5)
+                column_dict[PERCENTILE_75TH] = pd.to_datetime(input_df[temp], unit="s").quantile(0.75)
+                column_dict[STDDEV] = input_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
+                input_df.drop(columns=[temp], inplace=True)
             else:
                 raise Exception("Programming error.")
 
