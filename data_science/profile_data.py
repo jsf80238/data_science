@@ -611,8 +611,8 @@ if __name__ == "__main__":
             # Value counts
             # Collect no more than number of values available or what was given on the command-line
             # whichever is less
-            counter = Counter(values)
-            max_length = min(max_detail_values, len(non_null_values))
+            counter = Counter(values.to_list())
+            max_length = min(max_detail_values, values.size)
             most_common_list = counter.most_common(max_length)
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
