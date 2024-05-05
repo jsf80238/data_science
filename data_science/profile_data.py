@@ -20,6 +20,7 @@ from openpyxl.styles import Border, Side, Alignment, Font, borders
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import seaborn as sns
 # Imports below are custom
 from lib.base import C, Database, Logger, get_line_count
@@ -28,6 +29,7 @@ from lib.base import C, Database, Logger, get_line_count
 MAX_SHEET_NAME_LENGTH = 31
 # Excel output
 ROUNDING = 1  # 5.4% for example
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 # Headings for Excel output
 VALUE, COUNT = "Value", "Count"
 # Datatypes
@@ -42,7 +44,7 @@ PATTERN_ABBR = " pat"
 # Don't plot histograms/boxes if there are fewer than this number of distinct values
 # And don't make pie charts if there are more than this number of distinct values
 DEFAULT_PLOT_VALUES_LIMIT = 8
-# When determining the datatype of a CSV column examine (up to) this number of records
+# When determining the datatype of a column examine (up to) this number of records
 DATATYPE_SAMPLING_SIZE = 500
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
@@ -124,6 +126,44 @@ ANALYSIS_LIST = (
     PERCENTILE_75TH,
     STDDEV,
 )
+
+
+def format_long_string(s: str, cutoff: int) -> str:
+    """
+    | This string is really long and won't display nicely ... so adjust, for example:
+    |   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
+    | Will be replaced with:
+    | I'm u...(actual length is 173 characters)...oset.
+
+    :param s: the long string
+    :param cutoff: how long is too long
+    :return: formatted string
+    """
+    if not s:
+        return ""
+    if len(s) <= cutoff:
+        return s
+    placeholder = f"...(actual length is {len(s)} characters)..."
+    prefix = s[:5]
+    suffix = s[-5:]
+    return prefix + placeholder + suffix
+
+
+def convert_datatype(name: np.dtypes) -> str:
+    """
+    Convert Pandas datatypes to a more generic type
+
+    :param value: the Pandas name
+    :return: one of: NUMBER, DATETIME, STRING
+    """
+    name = str(name)
+    if "date" in name.lower():
+        return DATETIME
+    if "int" in name.lower():
+        return NUMBER
+    if "float" in name.lower():
+        return NUMBER
+    return STRING
 
 
 def convert_str_to_float(value: str) -> float:
@@ -262,7 +302,7 @@ def is_data_file(input_argument: str) -> bool:
     :param input_argument: what the user provided
     :return: True if we think this is a data file, else False
     """
-    for suffix in ".csv", ".dat", ".txt", ".dsv":
+    for suffix in C.PARQUET_EXTENSION.value, C.CSV_EXTENSION.value, ".dat", ".txt", ".dsv":
         if input_argument.lower().endswith(suffix):
             return True
     return False
@@ -286,11 +326,11 @@ def insert_image(image_type: str, sheet_number: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
+        description='Profile the data in a database or file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
 
     parser.add_argument('input',
-                        metavar="/path/to/input_data_file.csv | query-against-database",
-                        help="An example query is 'select a, b, c from t where x>7'.")
+                        metavar="/path/to/input_data_file.extension | query-against-database",
+                        help="An example query is 'select a, b, c from t where x>7'. File names must end in csv, dat, txt, dsv or parquet. See also --delimiter.")
     parser.add_argument('--header-lines',
                         type=int,
                         metavar="NUM",
@@ -300,8 +340,8 @@ if __name__ == "__main__":
     parser.add_argument('--delimiter',
                         metavar="CHAR",
                         default=",",
-                        help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database.")
-    parser.add_argument('--sample-rows-file',
+                        help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database or a parquet file.")
+    parser.add_argument('--sample-rows',
                         type=int,
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
@@ -378,7 +418,7 @@ if __name__ == "__main__":
         environment_file = ""
     header_lines = args.header_lines
     delimiter = args.delimiter
-    sample_rows_file = args.sample_rows_file
+    sample_rows = args.sample_rows
     max_detail_values = args.max_detail_values
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
@@ -399,12 +439,20 @@ if __name__ == "__main__":
     if input_query:
         # Verify we have the information we need to connect to the database
         host_name = host_name or environment_settings_dict.get("HOST_NAME")
+        if not host_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-host-name.")
         port_number = port_number or environment_settings_dict.get("PORT_NUMBER")
+        if not port_number:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-port-number.")
         database_name = database_name or environment_settings_dict.get("DATABASE_NAME")
+        if not database_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-database-name.")
         user_name = user_name or environment_settings_dict.get("USER_NAME")
+        if not user_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-user-name.")
         password = password or environment_settings_dict.get("PASSWORD")
-        if not (host_name and port_number and database_name and user_name and password):
-            parser.error("Connecting to a database requires environment variables and/or environment file and/or --db-host-name, --db-port-number, --db-name, --db-user-name, --db-password")
+        if not password:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-password.")
     elif input_path:
         if not input_path.exists():
             parser.error(f"Could not find input file '{input_path}'.")
@@ -419,12 +467,10 @@ if __name__ == "__main__":
         logger = Logger().get_logger()
 
     # Now, read the data
+    input_df = None
     data_dict = defaultdict(list)
     # ↑ Keys are column_names, values are a list of values from the data.
-    non_null_data_dict = dict()
-    # ↑ A list of non-null values is commonly of interest, calculate it once.
-    # Keys are column_names, values are a list of non-null values (if any) from the data.
-    datatype_dict = dict()  #
+    datatype_dict = dict()
     # ↑ Keys are column_names, values are the type of data (NUMBER, DATETIME, STRING)
     if input_query:
         # Data is coming from a database query
@@ -457,85 +503,46 @@ if __name__ == "__main__":
             else:
                 logger.error(f"Could not determine data type for column '{column_name}' based on the JDBC metadata: {str(item)}")
                 datatype_dict[column_name] = STRING
-        # Non-null data is useful for later calculations
-        for column_name, values in data_dict.items():
-            non_null_data_dict[column_name] = [x for x in values if x is not None]
         # Sometimes the JDBC API returns strings for values its metadata says are dates/datetimes.
         # Convert these as necessary from Python strings to Python datetimes
         for column_name, values in data_dict.items():
             if datatype_dict[column_name] == DATETIME:
                 # Check the type of the first non-null value
-                if type(non_null_data_dict[column_name][0]) == str:
+                if isinstance(data_dict[column_name][0], str):
                     data_dict[column_name] = list(map(lambda x: dateutil.parser.parse(x), data_dict[column_name]))
-                    non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
+        input_df = pd.DataFrame.from_dict(data_dict)
 
     elif input_path:
         # Data is coming from a file
         logger.info(f"Reading from '{input_path}' ...")
-        # Manage sampling, if any
-        # For example, suppose the file contains 100 lines and we want to sample 20 of them.
-        # The ratio is 20/100, or 0.2, and if a random number between 0 and 1 is less than 0.2
-        # then we will include that row.
-        if sample_rows_file:
-            ratio = sample_rows_file / get_line_count(input_path)
+        if input_path.name.endswith(C.PARQUET_EXTENSION.value):
+            input_df = pq.read_table(input_path).to_pandas()
         else:
-            ratio = 1  # Include all rows
-        with open(input_path, newline="", encoding="utf-8") as csvfile:
-            csvreader = csv.DictReader(csvfile, delimiter=delimiter)
-            for i, row in enumerate(csvreader, 1):
-                if i <= header_lines:
-                    continue
-                if ratio >= 1 or random.random() < ratio:
-                    for column_name, value in row.items():
-                        column_name = column_name.replace("/", "_")  # slashes don't work well in paths
-                        data_dict[column_name].append(value)
-        # Set best type for each column of data
-        for column_name, values in data_dict.items():
+            input_df = pd.read_csv(input_path, delimiter=delimiter, header=header_lines)
+        # Sampling requested?
+        if sample_rows:
+            input_df = input_df.sample(sample_rows)
+        # Pandas will automatically attempt to convert data to datetime where possible
+        # It does so poorly, in my experience, so will also try "manually"
+        for column_name in input_df.select_dtypes(include=["object"]).columns:
+            mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+            s = input_df[~mask][column_name]
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            non_null_list = [x for x in values if x is not None]
-            sampled_list = random.sample(non_null_list, min(DATATYPE_SAMPLING_SIZE, len(non_null_list)))
-            is_parse_error = False
-            for item in sampled_list:
-                if len(str(item)) < 6:  # dateutil.parser.parse seems to interpret things like 2.0 as dates
-                    is_parse_error = True
-                    logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
-                    break
+            s = s.sample(min(DATATYPE_SAMPLING_SIZE, s.size))
+            for item in list(s):
                 try:
                     dateutil.parser.parse(item)
                 except:
-                    is_parse_error = True
                     logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
                     break
-            if not is_parse_error:
-                logger.info(f"Casting column '{column_name}' as a datetime.")
-                data_dict[column_name] = list(map(convert_str_to_datetime, values))
-                datatype_dict[column_name] = DATETIME
             else:
-                # Not a datetime, try number
-                is_parse_error = False
-                for item in sampled_list:
-                    try:
-                        float(item)
-                    except ValueError:
-                        is_parse_error = True
-                        logger.debug(f"Cannot cast column '{column_name}' as a number.")
-                        break
-                if not is_parse_error:
-                    logger.info(f"Casting column '{column_name}' as a number.")
-                    try:
-                        data_dict[column_name] = list(map(convert_str_to_float, values))
-                        datatype_dict[column_name] = NUMBER
-                    except ValueError as e:
-                        logger.warning(e)
-                        logger.info(f"Casting column '{column_name}' as a string.")
-                        datatype_dict[column_name] = STRING
-                else:
-                    logger.info(f"Casting column '{column_name}' as a string.")
-                    datatype_dict[column_name] = STRING
-            # Non-null data is useful for later calculations
-            non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
+                logger.info(f"Casting column '{column_name}' as a datetime ...")
+                input_df[column_name] = input_df[column_name].apply(dateutil.parser.parse)
 
     # Data has been read into input_df, now process it
+    if input_df.shape[0] == 0:
+        logger.critical(f"There is no data in '{input_path + input_query}'.")
+        exit()
     # To temporarily hold plots and html files
     tempdir = tempfile.TemporaryDirectory()
     tempdir_path = Path(tempdir.name)
@@ -543,76 +550,82 @@ if __name__ == "__main__":
     histogram_plot_list = list()
     box_plot_list = list()
     pie_plot_list = list()
+    # Standardize column names
+    input_df.columns = [make_sheet_name(x, MAX_SHEET_NAME_LENGTH) for x in input_df.columns]
 
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
-    for column_name, values in data_dict.items():  # values is a list of the values for this column
-        if False and not column_name.startswith("L"):  # For testing
+    for column_name, datatype in dict(input_df.dtypes).items():
+        values = input_df[column_name]
+        if False and not column_name.startswith("pre"):  # For testing
             continue
-        if not len(values):
-            logger.critical(f"There is no data in '{input_path+input_query}'.")
-            exit()
-        datatype = datatype_dict[column_name]
         # A list of non-null values are useful for some calculations below
-        non_null_values = non_null_data_dict[column_name]
-        datatype = datatype_dict[column_name]
+        mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+        non_null_df = input_df[~mask][column_name].to_frame()
         logger.info(f"Working on column '{column_name}' ...")
         column_dict = dict.fromkeys(ANALYSIS_LIST)
         # Row count
-        row_count = len(values)
+        row_count = values.size
         column_dict[ROW_COUNT] = row_count
         # Null
-        null_count = row_count - len(non_null_values)
+        null_count = row_count - non_null_df.shape[0]
         column_dict[NULL_COUNT] = null_count
         # Null%
         column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
         # Unique
-        unique_count = len(set(values))
+        unique_count = values.nunique(dropna=False)
         column_dict[UNIQUE_COUNT] = unique_count
         # Unique%
         column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
 
-        if null_count != row_count:
-            # Largest & smallest
-            column_dict[LARGEST] = max(non_null_values)
-            column_dict[SMALLEST] = min(non_null_values)
+        # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
+        datatype = convert_datatype(datatype)
 
+        if null_count != row_count:
+
+            temp = "temp"
             if datatype == STRING:
+                # Largest & smallest
+                column_dict[LARGEST] = format_long_string(non_null_df[column_name].max(), max_longest_string)
+                column_dict[SMALLEST] = format_long_string(non_null_df[column_name].min(), max_longest_string)
                 # Longest & shortest
-                column_dict[SHORTEST] = min(non_null_values, key=len)
-                longest_string = max(non_null_values, key=len)
-                if longest_string and len(longest_string) > max_longest_string:
-                    # This string is really long and won't display nicely ... so adjust, for example:
-                    #   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
-                    # Will be replaced with:
-                    # I'm u...(actual length is 173 characters)...oset.
-                    placeholder = f"...(actual length is {len(longest_string)} characters)..."
-                    prefix = longest_string[:5]
-                    suffix = longest_string[-5:]
-                    longest_string = prefix + placeholder + suffix
-                column_dict[LONGEST] = longest_string
+                non_null_df[temp] = non_null_df[column_name].str.len()
+                x = non_null_df.sort_values([temp], ascending=True, axis=0)
+                column_dict[SHORTEST] = x[column_name].iloc[0]
+                x = non_null_df.sort_values([temp], ascending=False, axis=0)
+                longest_string = x[column_name].iloc[0]
+                column_dict[LONGEST] = format_long_string(longest_string, max_longest_string)
                 # No mean/quartiles/stddev statistics for strings
             elif datatype == NUMBER:
+                # Largest & smallest
+                column_dict[LARGEST] = non_null_df[column_name].max()
+                column_dict[SMALLEST] = non_null_df[column_name].min()
                 # No longest/shortest for numbers and dates
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = mean(non_null_values)
-                column_dict[STDDEV] = stdev(non_null_values)
-                column_dict[PERCENTILE_25TH], column_dict[MEDIAN], column_dict[PERCENTILE_75TH] = quantiles(non_null_values)
+                column_dict[MEAN] = non_null_df[column_name].mean()
+                column_dict[STDDEV] = non_null_df[column_name].std()
+                column_dict[PERCENTILE_25TH] = non_null_df[column_name].quantile(0.25)
+                column_dict[MEDIAN] = non_null_df[column_name].quantile(0.5)
+                column_dict[PERCENTILE_75TH] = non_null_df[column_name].quantile(0.75)
             elif datatype == DATETIME:
+                # Largest & smallest
+                # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
+                column_dict[LARGEST] = non_null_df[column_name].max().strftime(DATE_FORMAT)
+                column_dict[SMALLEST] = non_null_df[column_name].min().strftime(DATE_FORMAT)
                 # No longest/shortest for numbers and dates
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                values_as_epoch_seconds = [x.timestamp() for x in non_null_values]
-                column_dict[MEAN] = datetime.fromtimestamp(mean(values_as_epoch_seconds))
-                column_dict[STDDEV] = stdev(
-                    values_as_epoch_seconds) / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
-                twenty_five, fifty, seventy_five = quantiles(values_as_epoch_seconds)
-                column_dict[PERCENTILE_25TH], column_dict[MEDIAN], column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(
-                    twenty_five), datetime.fromtimestamp(fifty), datetime.fromtimestamp(seventy_five)
+                non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
+                # For the next four lines convert datetime to string because openpyxl does not support datetimes with timezones
+                column_dict[MEAN] = pd.to_datetime(non_null_df[temp], unit="s").mean().strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_25TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.25).strftime(DATE_FORMAT)
+                column_dict[MEDIAN] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.5).strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_75TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.75).strftime(DATE_FORMAT)
+                column_dict[STDDEV] = non_null_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
             else:
                 raise Exception("Programming error.")
 
@@ -621,9 +634,15 @@ if __name__ == "__main__":
             # Value counts
             # Collect no more than number of values available or what was given on the command-line
             # whichever is less
-            counter = Counter(values)
-            max_length = min(max_detail_values, len(non_null_values))
+            counter = Counter(values.to_list())
+            max_length = min(max_detail_values, values.size)
             most_common_list = counter.most_common(max_length)
+            if datatype == DATETIME:
+                most_common_datetime_list = list()
+                for item, count in most_common_list:
+                    # Convert datetime to string because openpyxl does not support datetimes with timezones
+                    most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                most_common_list = most_common_datetime_list
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
             column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
@@ -643,8 +662,8 @@ if __name__ == "__main__":
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
         if datatype == STRING and row_count:
-            pattern_counter = get_pattern(non_null_values)
-            max_length = min(max_detail_values, len(non_null_values))
+            pattern_counter = get_pattern(non_null_df)
+            max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
             pattern_df = pd.DataFrame()
             # Create 3-column descending visual
@@ -666,7 +685,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
-            if len(non_null_values) >= plot_values_limit:
+            if len(non_null_df) >= plot_values_limit:
                 logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -677,7 +696,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[0],
                     data=None,
-                    x=non_null_values,
+                    x=non_null_df[column_name],
                     showfliers=True,
                     orient="h"
                 )
@@ -685,7 +704,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[1],
                     data=None,
-                    x=non_null_values,
+                    x=non_null_df[column_name],
                     showfliers=False,
                     orient="h"
                 )

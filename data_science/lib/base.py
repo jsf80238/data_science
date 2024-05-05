@@ -63,6 +63,7 @@ class C(enum.StrEnum):
     JAR = "jar"
     JDBC = "jdbc"
     NUMBER = "NUMBER"
+    PARQUET_EXTENSION = ".parquet"
     PORT_NUMBER = "port_number"
     SQL_EXTENSION = ".sql"
     VARCHAR = "VARCHAR"
