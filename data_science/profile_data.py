@@ -439,12 +439,20 @@ if __name__ == "__main__":
     if input_query:
         # Verify we have the information we need to connect to the database
         host_name = host_name or environment_settings_dict.get("HOST_NAME")
+        if not host_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-host-name.")
         port_number = port_number or environment_settings_dict.get("PORT_NUMBER")
+        if not port_number:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-port-number.")
         database_name = database_name or environment_settings_dict.get("DATABASE_NAME")
+        if not database_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-database-name.")
         user_name = user_name or environment_settings_dict.get("USER_NAME")
+        if not user_name:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-user-name.")
         password = password or environment_settings_dict.get("PASSWORD")
-        if not (host_name and port_number and database_name and user_name and password):
-            parser.error("Connecting to a database requires environment variables and/or environment file and/or --db-host-name, --db-port-number, --db-name, --db-user-name, --db-password")
+        if not password:
+            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-password.")
     elif input_path:
         if not input_path.exists():
             parser.error(f"Could not find input file '{input_path}'.")
@@ -462,10 +470,7 @@ if __name__ == "__main__":
     input_df = None
     data_dict = defaultdict(list)
     # ↑ Keys are column_names, values are a list of values from the data.
-    non_null_data_dict = dict()
-    # ↑ A list of non-null values is commonly of interest, calculate it once.
-    # Keys are column_names, values are a list of non-null values (if any) from the data.
-    datatype_dict = dict()  #
+    datatype_dict = dict()
     # ↑ Keys are column_names, values are the type of data (NUMBER, DATETIME, STRING)
     if input_query:
         # Data is coming from a database query
@@ -498,17 +503,14 @@ if __name__ == "__main__":
             else:
                 logger.error(f"Could not determine data type for column '{column_name}' based on the JDBC metadata: {str(item)}")
                 datatype_dict[column_name] = STRING
-        # Non-null data is useful for later calculations
-        for column_name, values in data_dict.items():
-            non_null_data_dict[column_name] = [x for x in values if x is not None]
         # Sometimes the JDBC API returns strings for values its metadata says are dates/datetimes.
         # Convert these as necessary from Python strings to Python datetimes
         for column_name, values in data_dict.items():
             if datatype_dict[column_name] == DATETIME:
                 # Check the type of the first non-null value
-                if type(non_null_data_dict[column_name][0]) == str:
+                if isinstance(data_dict[column_name][0], str):
                     data_dict[column_name] = list(map(lambda x: dateutil.parser.parse(x), data_dict[column_name]))
-                    non_null_data_dict[column_name] = [x for x in data_dict[column_name] if x is not None]
+        input_df = pd.DataFrame.from_dict(data_dict)
 
     elif input_path:
         # Data is coming from a file
@@ -610,6 +612,7 @@ if __name__ == "__main__":
                 column_dict[PERCENTILE_75TH] = non_null_df[column_name].quantile(0.75)
             elif datatype == DATETIME:
                 # Largest & smallest
+                # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
                 column_dict[LARGEST] = non_null_df[column_name].max().strftime(DATE_FORMAT)
                 column_dict[SMALLEST] = non_null_df[column_name].min().strftime(DATE_FORMAT)
                 # No longest/shortest for numbers and dates
@@ -617,6 +620,7 @@ if __name__ == "__main__":
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
                 non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
+                # For the next four lines convert datetime to string because openpyxl does not support datetimes with timezones
                 column_dict[MEAN] = pd.to_datetime(non_null_df[temp], unit="s").mean().strftime(DATE_FORMAT)
                 column_dict[PERCENTILE_25TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.25).strftime(DATE_FORMAT)
                 column_dict[MEDIAN] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.5).strftime(DATE_FORMAT)
@@ -636,6 +640,7 @@ if __name__ == "__main__":
             if datatype == DATETIME:
                 most_common_datetime_list = list()
                 for item, count in most_common_list:
+                    # Convert datetime to string because openpyxl does not support datetimes with timezones
                     most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
                 most_common_list = most_common_datetime_list
             most_common, most_common_count = most_common_list[0]
