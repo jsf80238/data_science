@@ -29,6 +29,7 @@ from lib.base import C, Database, Logger, get_line_count
 MAX_SHEET_NAME_LENGTH = 31
 # Excel output
 ROUNDING = 1  # 5.4% for example
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 # Headings for Excel output
 VALUE, COUNT = "Value", "Count"
 # Datatypes
@@ -125,6 +126,27 @@ ANALYSIS_LIST = (
     PERCENTILE_75TH,
     STDDEV,
 )
+
+
+def format_long_string(s: str, cutoff: int) -> str:
+    """
+    | This string is really long and won't display nicely ... so adjust, for example:
+    |   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
+    | Will be replaced with:
+    | I'm u...(actual length is 173 characters)...oset.
+
+    :param s: the long string
+    :param cutoff: how long is too long
+    :return: formatted string
+    """
+    if not s:
+        return ""
+    if len(s) <= cutoff:
+        return s
+    placeholder = f"...(actual length is {len(s)} characters)..."
+    prefix = s[:5]
+    suffix = s[-5:]
+    return prefix + placeholder + suffix
 
 
 def convert_datatype(name: np.dtypes) -> str:
@@ -304,11 +326,11 @@ def insert_image(image_type: str, sheet_number: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Profile the data in a database or CSV file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
+        description='Profile the data in a database or file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
 
     parser.add_argument('input',
-                        metavar="/path/to/input_data_file.csv | query-against-database",
-                        help="An example query is 'select a, b, c from t where x>7'.")
+                        metavar="/path/to/input_data_file.extension | query-against-database",
+                        help="An example query is 'select a, b, c from t where x>7'. File names must end in csv, dat, txt, dsv or parquet. See also --delimiter.")
     parser.add_argument('--header-lines',
                         type=int,
                         metavar="NUM",
@@ -318,7 +340,7 @@ if __name__ == "__main__":
     parser.add_argument('--delimiter',
                         metavar="CHAR",
                         default=",",
-                        help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database.")
+                        help="Use this character to delimit columns, default is a comma. Ignored when getting data from a database or a parquet file.")
     parser.add_argument('--sample-rows',
                         type=int,
                         metavar="NUM",
@@ -534,18 +556,18 @@ if __name__ == "__main__":
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
     for column_name, datatype in dict(input_df.dtypes).items():
         values = input_df[column_name]
-        if False and not column_name.startswith("L"):  # For testing
+        if False and not column_name.startswith("pre"):  # For testing
             continue
         # A list of non-null values are useful for some calculations below
         mask = (input_df[column_name].isna() | input_df[column_name].isnull())
-        non_null_values = input_df[~mask][column_name]
+        non_null_df = input_df[~mask][column_name].to_frame()
         logger.info(f"Working on column '{column_name}' ...")
         column_dict = dict.fromkeys(ANALYSIS_LIST)
         # Row count
         row_count = values.size
         column_dict[ROW_COUNT] = row_count
         # Null
-        null_count = row_count - non_null_values.size
+        null_count = row_count - non_null_df.shape[0]
         column_dict[NULL_COUNT] = null_count
         # Null%
         column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
@@ -559,50 +581,47 @@ if __name__ == "__main__":
         datatype = convert_datatype(datatype)
 
         if null_count != row_count:
-            # Largest & smallest
-            column_dict[LARGEST] = non_null_values.max()
-            column_dict[SMALLEST] = non_null_values.min()
 
             temp = "temp"
             if datatype == STRING:
+                # Largest & smallest
+                column_dict[LARGEST] = format_long_string(non_null_df[column_name].max(), max_longest_string)
+                column_dict[SMALLEST] = format_long_string(non_null_df[column_name].min(), max_longest_string)
                 # Longest & shortest
-                input_df[temp] = input_df[column_name].str.len()
-                x = input_df.sort_values([temp], axis=0)
+                non_null_df[temp] = non_null_df[column_name].str.len()
+                x = non_null_df.sort_values([temp], ascending=True, axis=0)
                 column_dict[SHORTEST] = x[column_name].iloc[0]
-                longest_string = x[column_name].iloc[row_count-1]
-                if longest_string and len(longest_string) > max_longest_string:
-                    # This string is really long and won't display nicely ... so adjust, for example:
-                    #   I'm unhappy with my collection of boring clothes. In striving to cut back on wasteful purchases, and to keep a tighter closet, I have sucked all of the fun out of my closet.
-                    # Will be replaced with:
-                    # I'm u...(actual length is 173 characters)...oset.
-                    placeholder = f"...(actual length is {len(longest_string)} characters)..."
-                    prefix = longest_string[:5]
-                    suffix = longest_string[-5:]
-                    longest_string = prefix + placeholder + suffix
-                column_dict[LONGEST] = longest_string
+                x = non_null_df.sort_values([temp], ascending=False, axis=0)
+                longest_string = x[column_name].iloc[0]
+                column_dict[LONGEST] = format_long_string(longest_string, max_longest_string)
                 # No mean/quartiles/stddev statistics for strings
             elif datatype == NUMBER:
+                # Largest & smallest
+                column_dict[LARGEST] = non_null_df[column_name].max()
+                column_dict[SMALLEST] = non_null_df[column_name].min()
                 # No longest/shortest for numbers and dates
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = non_null_values.mean()
-                column_dict[STDDEV] = non_null_values.std()
-                column_dict[PERCENTILE_25TH] = non_null_values.quantile(0.25)
-                column_dict[MEDIAN] = non_null_values.quantile(0.5)
-                column_dict[PERCENTILE_75TH] = non_null_values.quantile(0.75)
+                column_dict[MEAN] = non_null_df[column_name].mean()
+                column_dict[STDDEV] = non_null_df[column_name].std()
+                column_dict[PERCENTILE_25TH] = non_null_df[column_name].quantile(0.25)
+                column_dict[MEDIAN] = non_null_df[column_name].quantile(0.5)
+                column_dict[PERCENTILE_75TH] = non_null_df[column_name].quantile(0.75)
             elif datatype == DATETIME:
+                # Largest & smallest
+                column_dict[LARGEST] = non_null_df[column_name].max().strftime(DATE_FORMAT)
+                column_dict[SMALLEST] = non_null_df[column_name].min().strftime(DATE_FORMAT)
                 # No longest/shortest for numbers and dates
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                input_df[temp] = input_df[column_name].astype('int64')//1e9
-                column_dict[MEAN] = pd.to_datetime(input_df[temp], unit="s").mean()
-                column_dict[PERCENTILE_25TH] = pd.to_datetime(input_df[temp], unit="s").quantile(0.25)
-                column_dict[MEDIAN] = pd.to_datetime(input_df[temp], unit="s").quantile(0.5)
-                column_dict[PERCENTILE_75TH] = pd.to_datetime(input_df[temp], unit="s").quantile(0.75)
-                column_dict[STDDEV] = input_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
-                input_df.drop(columns=[temp], inplace=True)
+                non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
+                column_dict[MEAN] = pd.to_datetime(non_null_df[temp], unit="s").mean().strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_25TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.25).strftime(DATE_FORMAT)
+                column_dict[MEDIAN] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.5).strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_75TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.75).strftime(DATE_FORMAT)
+                column_dict[STDDEV] = non_null_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
             else:
                 raise Exception("Programming error.")
 
@@ -614,6 +633,11 @@ if __name__ == "__main__":
             counter = Counter(values.to_list())
             max_length = min(max_detail_values, values.size)
             most_common_list = counter.most_common(max_length)
+            if datatype == DATETIME:
+                most_common_datetime_list = list()
+                for item, count in most_common_list:
+                    most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                most_common_list = most_common_datetime_list
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
             column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
@@ -633,8 +657,8 @@ if __name__ == "__main__":
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
         if datatype == STRING and row_count:
-            pattern_counter = get_pattern(non_null_values)
-            max_length = min(max_detail_values, len(non_null_values))
+            pattern_counter = get_pattern(non_null_df)
+            max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
             pattern_df = pd.DataFrame()
             # Create 3-column descending visual
@@ -656,7 +680,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
-            if len(non_null_values) >= plot_values_limit:
+            if len(non_null_df) >= plot_values_limit:
                 logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -667,7 +691,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[0],
                     data=None,
-                    x=non_null_values,
+                    x=non_null_df[column_name],
                     showfliers=True,
                     orient="h"
                 )
@@ -675,7 +699,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[1],
                     data=None,
-                    x=non_null_values,
+                    x=non_null_df[column_name],
                     showfliers=False,
                     orient="h"
                 )
