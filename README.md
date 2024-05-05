@@ -35,18 +35,19 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
                            [--db-port-number PORT_NUMBER] [--db-name DATABASE_NAME]
                            [--db-user-name USER_NAME] [--db-password PASSWORD]
                            [--environment-file /path/to/file] [--verbose | --terse]
-                           /path/to/input_data_file.csv | query-against-database
-    
-    Profile the data in a database or CSV file. Generates an analysis consisting tables and
-    images stored in an Excel workbook or HTML pages. For string columns provides a pattern
-    analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and
-    question mark replacing everything else. For numeric and datetime columns produces a
-    histogram and box plots.
+                           /path/to/input_data_file.extension | query-against-database
+
+    Profile the data in a database or file. Generates an analysis consisting tables and images
+    stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis
+    with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question
+    mark replacing everything else. For numeric and datetime columns produces a histogram and
+    box plots.
     
     positional arguments:
-      /path/to/input_data_file.csv | query-against-database
-                            An example query is 'select a, b, c from t where x>7'.
-    
+      /path/to/input_data_file.extension | query-against-database
+                            An example query is 'select a, b, c from t where x>7'. File names
+                            must end in csv, dat, txt, dsv or parquet. See also --delimiter.
+     
     options:
       -h, --help            show this help message and exit
       --header-lines NUM    When reading from a file specifies the number of rows to skip UNTIL
@@ -180,6 +181,31 @@ Now, details by column.
 - All inspections are some variation of "routine", apparently.
 
 ### More execution examples
+**Get data from a database**
+
+    export MY_PASSWORD="password"
+    
+    $ python data_science/profile_data.py --tar=/tmp --db-host=localhost --db-port=5432 --db-name=example --db-user=postgres \
+      "select entry_date, amt as amount, part_number from my_table where category != 'misc'"
+
+**Get data from a database, with environment file**
+
+    $ cat /path/to/postgres.env
+    HOST_NAME="localhost"
+    PORT_NUMBER=5432
+    DATABASE_NAME="example"
+    USER_NAME="postgres"
+    PASSWORD="postgres"
+    
+    $ python data_science/profile_data.py --tar=/tmp --env=/path/to/postgres.env "select entry_date, amt as amount, part_number from my_table where category != 'misc'"
+
+**Parquet file, with sampling**
+    
+    $ python data_science/profile_data.py --tar=/tmp --sample=10000 /path/to/datafile.parquet
+
+**Tab-delimited file, also produce zip file containing HTML output**
+    
+    $ python data_science/profile_data.py --tar=/tmp --del="\t" --html /path/to/datafile.txt
 
 ## Potential improvements
 - Check for duplicate data.
