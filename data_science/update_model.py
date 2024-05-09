@@ -23,14 +23,14 @@ schema = (
     .add("volume", IntegerType())
 )
 
-data = [('2024-05-09T16:39:59-0600', '2024-04-28', 'NNE', 5.1, 127)]
-df = spark.createDataFrame(data, schema)
+spark.conf.set("spark.sql.streaming.schemaInference", True)
 
-# Show the DataFrame
+# Create the streaming_df to read from input directory
+df = spark.read \
+    .format("json") \
+    .option("cleanSource", "archive") \
+    .option("sourceArchiveDir", "/tmp") \
+    .option("maxFilesPerTrigger", 1) \
+    .load("/tmp/stock_data/")
+
 df.show()
-
-exit()
-
-df = spark \
-    .readStream \
-    .json("/tmp/stock_data")
