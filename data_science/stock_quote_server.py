@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from pendulum import date, datetime, now
 from http import HTTPStatus
 import json
 import os
@@ -38,7 +38,7 @@ def return_quote(ticker: str, the_date: [str, date]) -> Response:
         }
         return Response(json.dumps(payload), HTTPStatus.INTERNAL_SERVER_ERROR, mimetype=JSON_MIMETYPE)
     volume = get_volume()
-    stamp = datetime.now().strftime(TIMESTAMP_FORMAT)
+    stamp = now().strftime(TIMESTAMP_FORMAT)
     payload = {
         "stamp": stamp,
         "date": the_date.strftime(DATE_FORMAT),

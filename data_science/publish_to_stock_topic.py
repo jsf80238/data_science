@@ -14,7 +14,7 @@ from lib.base import Logger
 from lib.stock import STOCK_SERVICE_URL, STOCK_SERVICE_PORT, TICKER_DICT, FILE_SOURCE_DIR
 
 INTERVAL = 1  # seconds
-MAX_BATCH_SIZE = 10
+MAX_BATCH_SIZE = 2
 REFERENCE_DATE = date.today()
 logger = Logger().get_logger()
 redis_client = redis.StrictRedis()
