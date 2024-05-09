@@ -1,18 +1,21 @@
 from datetime import date, datetime
+from pathlib import Path
 from random import gauss
 
+STOCK_SERVICE_URL = "localhost"
+STOCK_SERVICE_PORT = 5000
+# REDIS_CHANNEL_NAME = "stock"
+FILE_SOURCE_DIR = Path("/tmp/stock_data")
 BASELINE_DATE = date(2024, 5, 8)
-
 DEFAULT_VOLUME = 100
 # As of 2024-05-08 the Vanguard Total Stock Market Index Fund
-# has returned 510.29% since its inception on 2000-11-13 (8577 days).
+# had returned 510.29% since its inception on 2000-11-13 (8577 days).
 # Using the formula:
 # A = P(1 + R/100)^t
-# That's a compounded daily rate of %0.000727.
+# That's a compounded daily rate of 0.000727.
 AVERAGE_DAILY_RETURN = 0.0727 / 100
-
 # Closing prices as of 2024-05-08, used as a baseline when generating random prices
-TICKER_PRICE_DICT = {
+TICKER_DICT = {
     "INOD": 10.48,
     "CRCT": 8.52,
     "SNRC": 9.2,
@@ -50,12 +53,14 @@ def get_price(ticker: str, on: date) -> float:
     :param on: generate a price for this date
     :return: semi-random price for the given date
     """
-    if ticker.upper() not in TICKER_PRICE_DICT:
+    if ticker.upper() not in TICKER_DICT:
         raise ValueError("No such ticker.")
-    baseline_price = TICKER_PRICE_DICT[ticker.upper()]
+    baseline_price = TICKER_DICT[ticker.upper()]
     randomized_price = gauss(baseline_price, baseline_price/50)
     elapsed_days = (on - BASELINE_DATE).days
     return round(randomized_price * (1+AVERAGE_DAILY_RETURN)**elapsed_days, 2)
 
 
-print(get_price("GS", date(2024, 11, 11)))
+if __name__ == "__main__":
+    print(get_price("GS", date(2024, 11, 11)))
+    print(get_price("no such ticker", date(2024, 11, 11)))

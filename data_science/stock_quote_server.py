@@ -7,15 +7,16 @@ import os
 from dateutil.parser import parse
 from flask import Flask, Response
 # Imports below are custom
-from lib.stock import get_price, get_volume
+from lib.base import Logger
+from lib.stock import get_price, get_volume, STOCK_SERVICE_URL, STOCK_SERVICE_PORT
 
-DEFAULT_LISTENING_PORT = 5000
 ERROR_MESSAGE = "Error message"
 JSON_MIMETYPE = "application/json"
 DATE_FORMAT = "%Y-%m-%d"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
 app = Flask(__name__)
+logger = Logger().get_logger()
 
 
 @app.route("/<ticker>/<the_date>")
@@ -50,4 +51,4 @@ def return_quote(ticker: str, the_date: [str, date]) -> Response:
 
 
 if __name__ == "__main__":
-    app.run(port=int(os.environ.get("PORT", DEFAULT_LISTENING_PORT)), host="0.0.0.0")
+    app.run(port=int(os.environ.get("PORT", STOCK_SERVICE_PORT)), host="0.0.0.0")
