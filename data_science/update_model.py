@@ -23,14 +23,16 @@ schema = (
     .add("volume", IntegerType())
 )
 
-spark.conf.set("spark.sql.streaming.schemaInference", True)
+spark.conf.set("spark.sql.streaming.schemaInference", False)
 
 # Create the streaming_df to read from input directory
-df = spark.read \
+df = spark.readStream \
     .format("json") \
-    .option("cleanSource", "archive") \
-    .option("sourceArchiveDir", "/tmp") \
-    .option("maxFilesPerTrigger", 1) \
+    .option("aweoifjaf", "dellllete") \
+    .option("cleanSource", "delete") \
+    .option("maxFilesPerTrigger", 10) \
+    .schema(schema) \
     .load("/tmp/stock_data/")
 
-df.show()
+# df.show(2)
+print(df.dtypes)
