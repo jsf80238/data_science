@@ -907,6 +907,5 @@ if cleaned_version_output_file:
         input_df.to_csv(zipped_target_path, index=False, compression=compression_opts)
     else:
         zipped_target_path = target_path.with_suffix(".gz")
-        # compression_opts = dict(method='gzip', archive_name=cleaned_version_output_file)
         input_df.to_parquet(zipped_target_path, index=False, compression="gzip")
     logger.info(f"Wrote {os.stat(zipped_target_path).st_size:,} bytes to '{zipped_target_path}'.")

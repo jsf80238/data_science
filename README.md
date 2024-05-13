@@ -88,6 +88,10 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
                             Default is the current directory. Will make intermediate
                             directories as necessary.
       --html                Also produce a zip file containing the results in HTML format.
+      --get-cleaned-version FILE_NAME
+                            Output the Pandas data frame in CSV or Parquet format. Might be
+                            useful if string columns were converted to datetimes/numerics. File
+                            name must end in '.csv' or '.parquet'.
       --db-host-name HOST_NAME
                             Overrides HOST_NAME environment variable. Ignored when getting data
                             from a file.
@@ -214,15 +218,19 @@ Now, details by column.
 
 **Tab-delimited file, also produce zip file containing HTML output**
     
-    $ python data_science/profile_data.py --tar=/tmp --del="\t" --html /path/to/datafile.txt
+    $ python data_science/profile_data.py --tar=/tmp --del="\t" --html /path/to/datafile.csv
 
 **Require perfection to convert string data to numeric or datetime**
 
-    $ python data_science/profile_data.py --tar=/tmp --object-conversion-allowed-error=0 /path/to/datafile.txt
+    $ python data_science/profile_data.py --tar=/tmp --object-conversion-allowed-error=0 /path/to/datafile.csv
 
 **Accept default 5% error rate when attempting to convert string data to numeric or datetime, but sample 1000 rows instead of 500**
 
-    $ python data_science/profile_data.py --tar=/tmp --object-sampling-limit=1000 /path/to/datafile.txt
+    $ python data_science/profile_data.py --tar=/tmp --object-sampling-limit=1000 /path/to/datafile.csv
+
+**Write reformatted numerics or datetimes back to a file**
+
+    $ python data_science/profile_data.py --tar=/tmp --get-clean=reformatted.csv /path/to/datafile.csv
 
 ## Potential improvements
 - Check for duplicate data.
