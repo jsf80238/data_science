@@ -28,15 +28,17 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
 
 ### Execution
     $ python data_science/profile_data.py -h
-    usage: profile_data.py [-h] [--header-lines NUM] [--delimiter CHAR]
-                           [--sample-rows-file NUM] [--max-detail-values NUM]
-                           [--max-pattern-length NUM] [--max-longest-string NUM]
+    usage: profile_data.py [-h] [--header-lines NUM] [--delimiter CHAR] [--sample-rows NUM]
+                           [--max-detail-values NUM] [--max-pattern-length NUM]
+                           [--plot-values-limit NUM] [--max-longest-string NUM]
+                           [--object-sampling-limit NUM]
+                           [--object-conversion-allowed-error-rate NUM]
                            [--target-dir /path/to/dir] [--html] [--db-host-name HOST_NAME]
                            [--db-port-number PORT_NUMBER] [--db-name DATABASE_NAME]
                            [--db-user-name USER_NAME] [--db-password PASSWORD]
                            [--environment-file /path/to/file] [--verbose | --terse]
                            /path/to/input_data_file.extension | query-against-database
-
+    
     Profile the data in a database or file. Generates an analysis consisting tables and images
     stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis
     with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question
@@ -47,22 +49,21 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
       /path/to/input_data_file.extension | query-against-database
                             An example query is 'select a, b, c from t where x>7'. File names
                             must end in csv, dat, txt, dsv or parquet. See also --delimiter.
-     
+    
     options:
       -h, --help            show this help message and exit
       --header-lines NUM    When reading from a file specifies the number of rows to skip UNTIL
                             the header row. Ignored when getting data from a database. Default
                             is 0. (must be in range 1..=9223372036854775807)
       --delimiter CHAR      Use this character to delimit columns, default is a comma. Ignored
-                            when getting data from a database.
-      --sample-rows-file NUM
-                            When reading from a file randomly choose this number of rows. If
+                            when getting data from a database or a parquet file.
+      --sample-rows NUM     When reading from a file randomly choose this number of rows. If
                             greater than or equal to the number of data rows will use all rows.
                             Ignored when getting data from a database. (must be in range
                             1..=9223372036854775807)
       --max-detail-values NUM
-                            Produce this many of the top/bottom value occurrences, default is
-                            35. (must be in range 1..=9223372036854775807)
+                            Produce this many of the top value occurrences, default is 35.
+                            (must be in range 1..=9223372036854775807)
       --max-pattern-length NUM
                             When segregating strings into patterns leave untouched strings of
                             length greater than this, default is 50. (must be in range
@@ -75,6 +76,14 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
       --max-longest-string NUM
                             When displaying long strings show a summary if string exceeds this
                             length, default is 50. (must be in range 50..=9223372036854775807)
+      --object-sampling-limit NUM
+                            To determine whether a string column can be treated as datetime or
+                            numeric sample this number of values, default is 500. (must be in
+                            range 1..=9223372036854775807)
+      --object-conversion-allowed-error-rate NUM
+                            To determine whether a string column can be treated as datetime or
+                            numeric allow up to this percentage of values to remain un-
+                            parseable, default is 5. (must be in range 1..=100)
       --target-dir /path/to/dir
                             Default is the current directory. Will make intermediate
                             directories as necessary.
@@ -101,7 +110,7 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
       --terse
 
 - Download your data.
-- `data_science/python analyze-quality.py ~/Downloads/restaurant-and-market-health-inspections.csv`
+- `python data_science/python profile_data.py ~/Downloads/restaurant-and-market-health-inspections.csv`
 - View the results from `analysis.xlsx` in your current directory, or the `--target-dir` directory if provided.
 
 ### Results
@@ -207,9 +216,17 @@ Now, details by column.
     
     $ python data_science/profile_data.py --tar=/tmp --del="\t" --html /path/to/datafile.txt
 
+**Require perfection to convert string data to numeric or datetime**
+
+    $ python data_science/profile_data.py --tar=/tmp --object-conversion-allowed-error=0 /path/to/datafile.txt
+
+**Accept default 5% error rate when attempting to convert string data to numeric or datetime, but sample 1000 rows instead of 500**
+
+    $ python data_science/profile_data.py --tar=/tmp --object-sampling-limit=1000 /path/to/datafile.txt
+
 ## Potential improvements
 - Check for duplicate data.
-- Allow the caller to specify unusual, but known, datetime formats.
+- Allow the caller to specify the expected format for datetime columns, because knowing the format would allow us to make certain optimizations.
 - Allow the caller to specify columns to exclude, or include.
 - Generate better plots. It is difficult to generate useful plots on an automated basis.
   - Add a [correlation matrix](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.corr.html#pandas.DataFrame.corr). 
