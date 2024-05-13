@@ -46,6 +46,7 @@ PATTERN_ABBR = " pat"
 DEFAULT_PLOT_VALUES_LIMIT = 8
 # When determining the datatype of a column examine (up to) this number of records
 DATATYPE_SAMPLING_SIZE = 500
+DEFAULT_DATATYPE_ALLOWED_ERROR_RATE = 0.1  # 10%
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
 PLOT_FONT_SCALE = 0.75
@@ -175,19 +176,6 @@ def convert_str_to_float(value: str) -> float:
     """
     if value:
         return float(value)
-    else:
-        return None
-
-
-def convert_str_to_datetime(value: str) -> datetime:
-    """
-    Convert CSV strings to a useful data type.
-
-    :param values: the value from the CSV column
-    :return: the data converted to float
-    """
-    if value:
-        return dateutil.parser.parse(value)
     else:
         return None
 
@@ -322,6 +310,20 @@ def insert_image(image_type: str, sheet_number: int) -> None:
     image = openpyxl.drawing.image.Image(image_path)
     image.anchor = "A1"
     worksheet.add_image(image)
+
+
+def convert_str_to_datetime(value: str) -> pd.Timestamp:
+    nominal_result = pd.to_datetime(value).replace(tzinfo=None)
+    if nominal_result > pd.Timestamp.max:
+        return pd.Timestamp.max
+    return max(pd.Timestamp.min, nominal_result)
+
+
+def safe_convert_str_to_datetime(value: str) -> pd.Timestamp:
+    try:
+        return convert_str_to_datetime(value)
+    except:
+        return None
 
 
 if __name__ == "__main__":
@@ -524,20 +526,27 @@ if __name__ == "__main__":
             input_df = input_df.sample(sample_rows)
         # Pandas will automatically attempt to convert data to datetime where possible
         # It does so poorly, in my experience, so will also try "manually"
+        # For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
         for column_name in input_df.select_dtypes(include=["object"]).columns:
             mask = (input_df[column_name].isna() | input_df[column_name].isnull())
             s = input_df[~mask][column_name]
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
             s = s.sample(min(DATATYPE_SAMPLING_SIZE, s.size))
+            failure_count = 0
             for item in list(s):
                 try:
-                    dateutil.parser.parse(item)
-                except:
-                    logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
-                    break
-            else:
+                    convert_str_to_datetime(item)
+                except Exception as e:
+                    failure_count += 1
+            failure_ratio = failure_count / s.size
+            if failure_ratio <= DEFAULT_DATATYPE_ALLOWED_ERROR_RATE:
                 logger.info(f"Casting column '{column_name}' as a datetime ...")
-                input_df[column_name] = input_df[column_name].apply(dateutil.parser.parse)
+                # input_df[column_name] = pd.to_datetime(input_df[column_name], errors="coerce")
+                # ValueError: year 16500 is out of range
+                input_df[column_name] = pd.to_datetime(input_df[column_name].apply(safe_convert_str_to_datetime))
+                print(input_df.describe())
+                # input_df[column_name] = input_df[column_name].astype('datetime64[ns]')
+                print(input_df.info())
 
     # Data has been read into input_df, now process it
     if input_df.shape[0] == 0:
