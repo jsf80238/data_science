@@ -44,8 +44,9 @@ PATTERN_ABBR = " pat"
 # Don't plot histograms/boxes if there are fewer than this number of distinct values
 # And don't make pie charts if there are more than this number of distinct values
 DEFAULT_PLOT_VALUES_LIMIT = 8
-# When determining the datatype of a column examine (up to) this number of records
-DATATYPE_SAMPLING_SIZE = 500
+# When determining whether a string column could be considered datetime or numeric examine (up to) this number of records
+DEFAULT_OBJECT_SAMPLING_COUNT = 500
+DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE = 5  # %
 # Plotting visual effects
 PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
 PLOT_FONT_SCALE = 0.75
@@ -175,19 +176,6 @@ def convert_str_to_float(value: str) -> float:
     """
     if value:
         return float(value)
-    else:
-        return None
-
-
-def convert_str_to_datetime(value: str) -> datetime:
-    """
-    Convert CSV strings to a useful data type.
-
-    :param values: the value from the CSV column
-    :return: the data converted to float
-    """
-    if value:
-        return dateutil.parser.parse(value)
     else:
         return None
 
@@ -324,6 +312,30 @@ def insert_image(image_type: str, sheet_number: int) -> None:
     worksheet.add_image(image)
 
 
+def convert_str_to_datetime(value: str) -> pd.Timestamp:
+    """
+    Pandas uses dateutils to parse dates. And whereas Python supports dates from year 0000 to 9999, Pandas does not.
+    :param value: the string which might be a datetime
+    :return: the value as a naive datetime (openpyxl does not support timezones)
+    """
+    nominal_result = pd.to_datetime(value).replace(tzinfo=None)
+    if nominal_result > pd.Timestamp.max:
+        return pd.Timestamp.max
+    return max(pd.Timestamp.min, nominal_result)
+
+
+def safe_convert_str_to_datetime(value: str) -> pd.Timestamp:
+    """
+    This is a wrapper around convert_str_to_datetime which swallows exceptions when used with Pandas' apply function
+    :param value: the string which might be a datetime
+    :return: the value as a naive datetime (openpyxl does not support timezones), or None if it cannot be parsed
+    """
+    try:
+        return convert_str_to_datetime(value)
+    except:
+        return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Profile the data in a database or file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
@@ -370,6 +382,17 @@ if __name__ == "__main__":
                         action=range_action(50, sys.maxsize),
                         default=DEFAULT_LONGEST_LONGEST,
                         help=f"When displaying long strings show a summary if string exceeds this length, default is {DEFAULT_LONGEST_LONGEST}.")
+
+    parser.add_argument('--object-sampling-limit',
+                        metavar="NUM",
+                        action=range_action(1, sys.maxsize),
+                        default=DEFAULT_OBJECT_SAMPLING_COUNT,
+                        help=f"To determine whether a string column can be treated as datetime or numeric sample this number of values, default is {DEFAULT_OBJECT_SAMPLING_COUNT}.")
+    parser.add_argument('--object-conversion-allowed-error-rate',
+                        metavar="NUM",
+                        action=range_action(1, 100),
+                        default=DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE,
+                        help=f"To determine whether a string column can be treated as datetime or numeric allow up to this percentage of values to remain un-parseable, default is {DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE}.")
     parser.add_argument('--target-dir',
                         metavar="/path/to/dir",
                         default=Path.cwd(),
@@ -423,6 +446,8 @@ if __name__ == "__main__":
     max_pattern_length = args.max_pattern_length
     max_longest_string = args.max_longest_string
     plot_values_limit = args.plot_values_limit
+    object_sampling_limit = args.object_sampling_limit
+    object_conversion_allowed_error_rate = args.object_conversion_allowed_error_rate / 100
     is_html_output = args.html
     is_excel_output = True
     target_dir = Path(args.target_dir)
@@ -524,20 +549,36 @@ if __name__ == "__main__":
             input_df = input_df.sample(sample_rows)
         # Pandas will automatically attempt to convert data to datetime where possible
         # It does so poorly, in my experience, so will also try "manually"
+        # For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
         for column_name in input_df.select_dtypes(include=["object"]).columns:
             mask = (input_df[column_name].isna() | input_df[column_name].isnull())
             s = input_df[~mask][column_name]
             # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            s = s.sample(min(DATATYPE_SAMPLING_SIZE, s.size))
+            s = s.sample(min(object_sampling_limit, s.size))
+            failure_count = 0
             for item in list(s):
                 try:
-                    dateutil.parser.parse(item)
-                except:
-                    logger.debug(f"Cannot cast column '{column_name}' as a datetime.")
-                    break
-            else:
+                    convert_str_to_datetime(item)
+                except Exception as e:
+                    failure_count += 1
+            failure_ratio = failure_count / s.size
+            if failure_ratio <= object_conversion_allowed_error_rate:
                 logger.info(f"Casting column '{column_name}' as a datetime ...")
-                input_df[column_name] = input_df[column_name].apply(dateutil.parser.parse)
+                input_df[column_name] = pd.to_datetime(input_df[column_name].apply(safe_convert_str_to_datetime))
+            else:
+                logger.info(f"Error rate of {100*failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
+                failure_count = 0
+                for item in list(s):
+                    try:
+                        float(item)
+                    except Exception as e:
+                        failure_count += 1
+                failure_ratio = failure_count / s.size
+                if failure_ratio <= object_conversion_allowed_error_rate:
+                    logger.info(f"Casting column '{column_name}' as numeric ...")
+                    input_df[column_name] = pd.to_numeric(input_df[column_name], errors="coerce")
+                else:
+                    logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
 
     # Data has been read into input_df, now process it
     if input_df.shape[0] == 0:
@@ -621,10 +662,10 @@ if __name__ == "__main__":
                 # Mean/quartiles/stddev statistics
                 non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
                 # For the next four lines convert datetime to string because openpyxl does not support datetimes with timezones
-                column_dict[MEAN] = pd.to_datetime(non_null_df[temp], unit="s").mean().strftime(DATE_FORMAT)
-                column_dict[PERCENTILE_25TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.25).strftime(DATE_FORMAT)
-                column_dict[MEDIAN] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.5).strftime(DATE_FORMAT)
-                column_dict[PERCENTILE_75TH] = pd.to_datetime(non_null_df[temp], unit="s").quantile(0.75).strftime(DATE_FORMAT)
+                column_dict[MEAN] = datetime.fromtimestamp(non_null_df[temp].mean()).strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_25TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.25)).strftime(DATE_FORMAT)
+                column_dict[MEDIAN] = datetime.fromtimestamp(non_null_df[temp].quantile(0.5)).strftime(DATE_FORMAT)
+                column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.75)).strftime(DATE_FORMAT)
                 column_dict[STDDEV] = non_null_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
             else:
                 raise Exception("Programming error.")
