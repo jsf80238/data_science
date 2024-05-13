@@ -400,6 +400,9 @@ if __name__ == "__main__":
     parser.add_argument('--html',
                         action='store_true',
                         help="Also produce a zip file containing the results in HTML format.")
+    parser.add_argument('--get-cleaned-version',
+                        metavar="FILE_NAME",
+                        help=f"Output the Pandas data frame in CSV or Parquet format. Might be useful if string columns were converted to datetimes/numerics. File name must end in '{C.CSV_EXTENSION}' or '{C.PARQUET_EXTENSION}'.")
     parser.add_argument('--db-host-name',
                         metavar="HOST_NAME",
                         help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
@@ -448,6 +451,7 @@ if __name__ == "__main__":
     plot_values_limit = args.plot_values_limit
     object_sampling_limit = args.object_sampling_limit
     object_conversion_allowed_error_rate = args.object_conversion_allowed_error_rate / 100
+    cleaned_version_output_file = args.get_cleaned_version
     is_html_output = args.html
     is_excel_output = True
     target_dir = Path(args.target_dir)
@@ -484,6 +488,9 @@ if __name__ == "__main__":
     else:
         raise Exception("Programming error.")
 
+    if cleaned_version_output_file:
+        if not (cleaned_version_output_file.lower().endswith(C.CSV_EXTENSION) or cleaned_version_output_file.lower().endswith(C.PARQUET_EXTENSION)):
+            parser.error(f"Cleaned version output file name, if provided, must end with '{C.CSV_EXTENSION}' or '{C.PARQUET_EXTENSION}'.")
     if args.verbose:
         logger = Logger("DEBUG").get_logger()
     elif args.terse:
@@ -724,7 +731,7 @@ if __name__ == "__main__":
                 ax.set_ylabel("Count")
                 plt.savefig(plot_output_path)
                 plt.close('all')  # Save memory
-                logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
+                logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
             if len(non_null_df) >= plot_values_limit:
                 logger.info("Creating box plots ...")
@@ -753,7 +760,7 @@ if __name__ == "__main__":
                 #plt.subplots_adjust(left=1, right=4, bottom=0.75, top=3, wspace=0.5, hspace=3)
                 plt.savefig(plot_output_path)
                 plt.close('all')  # Save memory
-                logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
+                logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
         if len(plot_data) < plot_values_limit:
             logger.info("Creating pie plot ...")
@@ -764,7 +771,7 @@ if __name__ == "__main__":
             ax.set_title(column_name)
             plt.savefig(plot_output_path)
             plt.close('all')  # Save memory
-            logger.info(f"Wrote {os.stat(plot_output_path).st_size} bytes to '{plot_output_path}'.")
+            logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
             pie_plot_list.append(column_name)
 
     # Convert the summary_dict dictionary of dictionaries to a DataFrame
@@ -827,7 +834,7 @@ if __name__ == "__main__":
                 worksheet.cell(row=row, column=col).border = Border(outline=Side(border_style=borders.BORDER_THICK, color='FFFFFFFF'))
 
         workbook.save(output_file)
-        logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
+        logger.info(f"Wrote {os.stat(output_file).st_size:,} bytes to '{output_file}'.")
 
 
     if is_html_output:
@@ -890,4 +897,15 @@ if __name__ == "__main__":
             root_dir=tempdir_path,
             base_dir=".",
         )
-        logger.info(f"Wrote {os.stat(output_file).st_size} bytes to '{output_file}'.")
+        logger.info(f"Wrote {os.stat(output_file).st_size:,} bytes to '{output_file}'.")
+
+if cleaned_version_output_file:
+    target_path = target_dir / cleaned_version_output_file
+    if cleaned_version_output_file.lower().endswith(C.CSV_EXTENSION):
+        zipped_target_path = target_path.with_suffix(".zip")
+        compression_opts = dict(method='zip', archive_name=cleaned_version_output_file)
+        input_df.to_csv(zipped_target_path, index=False, compression=compression_opts)
+    else:
+        zipped_target_path = target_path.with_suffix(".gz")
+        input_df.to_parquet(zipped_target_path, index=False, compression="gzip")
+    logger.info(f"Wrote {os.stat(zipped_target_path).st_size:,} bytes to '{zipped_target_path}'.")
