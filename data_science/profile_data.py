@@ -90,6 +90,25 @@ DATATYPE_MAPPING_DICT = {
     "SQLXML": STRING,
     "TIME": STRING,
     "VARCHAR": STRING,
+
+    # See https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#label-python-connector-type-codes
+    "0": NUMBER,
+    "1": NUMBER,
+    "2": STRING,
+    "3": DATETIME,
+    "4": DATETIME,
+    "5": STRING,
+    "6": DATETIME,
+    "7": DATETIME,
+    "8": DATETIME,
+    "9": STRING,
+    "10": None,
+    "11": None,
+    "12": STRING,
+    "13": NUMBER,
+    "14": None,
+    "15": None,
+    "16": None,
 }
 
 ROW_COUNT = "count"
@@ -108,6 +127,7 @@ PERCENTILE_25TH = "percentile_25th"
 MEDIAN = "median"
 PERCENTILE_75TH = "percentile_75th"
 STDDEV = "stddev"
+FLOAT = "float"
 
 ANALYSIS_LIST = (
     ROW_COUNT,
@@ -142,6 +162,8 @@ def format_long_string(s: str, cutoff: int) -> str:
     """
     if not s:
         return ""
+    if not isinstance(s, str):
+        s = str(s)
     if len(s) <= cutoff:
         return s
     placeholder = f"...(actual length is {len(s)} characters)..."
@@ -162,7 +184,7 @@ def convert_datatype(name: np.dtypes) -> str:
         return DATETIME
     if "int" in name.lower():
         return NUMBER
-    if "float" in name.lower():
+    if FLOAT in name.lower():
         return NUMBER
     return STRING
 
@@ -604,7 +626,8 @@ if __name__ == "__main__":
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
-    for column_name, datatype in dict(input_df.dtypes).items():
+    # for column_name, datatype in dict(input_df.dtypes).items():
+    for column_name in input_df.columns:
         values = input_df[column_name]
         if False and not column_name.startswith("pre"):  # For testing
             continue
@@ -628,7 +651,7 @@ if __name__ == "__main__":
         column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
 
         # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
-        datatype = convert_datatype(datatype)
+        datatype = datatype_dict[column_name]
 
         if null_count != row_count:
 
@@ -653,11 +676,11 @@ if __name__ == "__main__":
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = non_null_df[column_name].mean()
-                column_dict[STDDEV] = non_null_df[column_name].std()
-                column_dict[PERCENTILE_25TH] = non_null_df[column_name].quantile(0.25)
-                column_dict[MEDIAN] = non_null_df[column_name].quantile(0.5)
-                column_dict[PERCENTILE_75TH] = non_null_df[column_name].quantile(0.75)
+                column_dict[MEAN] = non_null_df[column_name].astype(FLOAT).mean()
+                column_dict[STDDEV] = non_null_df[column_name].astype(FLOAT).std()
+                column_dict[PERCENTILE_25TH] = non_null_df[column_name].astype(FLOAT).quantile(0.25)
+                column_dict[MEDIAN] = non_null_df[column_name].astype(FLOAT).quantile(0.5)
+                column_dict[PERCENTILE_75TH] = non_null_df[column_name].astype(FLOAT).quantile(0.75)
             elif datatype == DATETIME:
                 # Largest & smallest
                 # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
@@ -689,7 +712,10 @@ if __name__ == "__main__":
                 most_common_datetime_list = list()
                 for item, count in most_common_list:
                     # Convert datetime to string because openpyxl does not support datetimes with timezones
-                    most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                    try:
+                        most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                    except ValueError as e:
+                        most_common_datetime_list.append(("", count))
                 most_common_list = most_common_datetime_list
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
@@ -722,11 +748,15 @@ if __name__ == "__main__":
             pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
+            try:
+                values_to_plot = values.astype(FLOAT)
+            except TypeError as e:
+                values_to_plot = values
             if len(plot_data) >= plot_values_limit:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
-                ax = values.plot.hist(bins=min(20, len(values)))
+                ax = values_to_plot.plot.hist(bins=min(20, len(values_to_plot)))
                 ax.set_xlabel(column_name)
                 ax.set_ylabel("Count")
                 plt.savefig(plot_output_path)
@@ -744,7 +774,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[0],
                     data=None,
-                    x=non_null_df[column_name],
+                    x=values_to_plot,
                     showfliers=True,
                     orient="h"
                 )
@@ -752,7 +782,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[1],
                     data=None,
-                    x=non_null_df[column_name],
+                    x=values_to_plot,
                     showfliers=False,
                     orient="h"
                 )
