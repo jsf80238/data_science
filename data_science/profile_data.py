@@ -736,7 +736,7 @@ if __name__ == "__main__":
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
         if datatype == STRING and row_count:
-            pattern_counter = get_pattern(non_null_df)
+            pattern_counter = get_pattern(non_null_df[column_name])
             max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
             pattern_df = pd.DataFrame()
