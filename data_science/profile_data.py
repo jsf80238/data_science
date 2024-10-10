@@ -648,8 +648,7 @@ if __name__ == "__main__":
             input_df[column_name] = pd.to_datetime(s.apply(safe_convert_str_to_datetime))
             datatype_dict[column_name] = DATETIME
         else:
-            logger.info(
-                f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
+            logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
             failure_count = 0
             for item in list(a_sample):
                 try:
@@ -662,7 +661,7 @@ if __name__ == "__main__":
                 input_df[column_name] = pd.to_numeric(s, errors="coerce")
                 datatype_dict[column_name] = NUMBER
             else:
-                logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
+                logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
                 logger.info(f"Will keep column '{column_name}' as a string.")
                 datatype_dict[column_name] = STRING
     # To temporarily hold plots and html files
