@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import seaborn as sns
+from pandas import Series
+
 # Imports below are custom
 from lib.base import C, Database, Logger, get_line_count
 
@@ -90,6 +92,25 @@ DATATYPE_MAPPING_DICT = {
     "SQLXML": STRING,
     "TIME": STRING,
     "VARCHAR": STRING,
+
+    # See https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#label-python-connector-type-codes
+    "0": NUMBER,
+    "1": NUMBER,
+    "2": STRING,
+    "3": DATETIME,
+    "4": DATETIME,
+    "5": STRING,
+    "6": DATETIME,
+    "7": DATETIME,
+    "8": DATETIME,
+    "9": STRING,
+    "10": None,
+    "11": None,
+    "12": STRING,
+    "13": NUMBER,
+    "14": None,
+    "15": None,
+    "16": None,
 }
 
 ROW_COUNT = "count"
@@ -108,6 +129,7 @@ PERCENTILE_25TH = "percentile_25th"
 MEDIAN = "median"
 PERCENTILE_75TH = "percentile_75th"
 STDDEV = "stddev"
+FLOAT = "float"
 
 ANALYSIS_LIST = (
     ROW_COUNT,
@@ -142,6 +164,8 @@ def format_long_string(s: str, cutoff: int) -> str:
     """
     if not s:
         return ""
+    if not isinstance(s, str):
+        s = str(s)
     if len(s) <= cutoff:
         return s
     placeholder = f"...(actual length is {len(s)} characters)..."
@@ -162,7 +186,7 @@ def convert_datatype(name: np.dtypes) -> str:
         return DATETIME
     if "int" in name.lower():
         return NUMBER
-    if "float" in name.lower():
+    if FLOAT in name.lower():
         return NUMBER
     return STRING
 
@@ -310,6 +334,45 @@ def insert_image(image_type: str, sheet_number: int) -> None:
     image = openpyxl.drawing.image.Image(image_path)
     image.anchor = "A1"
     worksheet.add_image(image)
+
+
+def assign_best_datatype(s: Series) -> str:
+    """
+    Pandas will automatically attempt to convert data to datetime where possible
+    It does so poorly, in my experience, so will also try "manually"
+    For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
+    """
+    # Sample up to DATATYPE_SAMPLING_SIZE non-null values
+    a_sample = s.sample(min(object_sampling_limit, s.size))
+    failure_count = 0
+    for item in list(a_sample):
+        try:
+            convert_str_to_datetime(item)
+        except Exception as e:
+            failure_count += 1
+    failure_ratio = failure_count / a_sample.size
+    if failure_ratio <= object_conversion_allowed_error_rate:
+        logger.info(f"Casting column '{column_name}' as a datetime ...")
+        s = pd.to_datetime(s.apply(safe_convert_str_to_datetime))
+        return DATETIME, s
+    else:
+        logger.info(
+            f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
+        failure_count = 0
+        for item in list(a_sample):
+            try:
+                float(item)
+            except Exception as e:
+                failure_count += 1
+        failure_ratio = failure_count / a_sample.size
+        if failure_ratio <= object_conversion_allowed_error_rate:
+            logger.info(f"Casting column '{column_name}' as numeric ...")
+            s = pd.to_numeric(s, errors="coerce")
+            return NUMBER, s
+        else:
+            logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
+    logger.info(f"Casting column '{column_name}' as a string ...")
+    return STRING, s
 
 
 def convert_str_to_datetime(value: str) -> pd.Timestamp:
@@ -554,43 +617,51 @@ if __name__ == "__main__":
         # Sampling requested?
         if sample_rows:
             input_df = input_df.sample(sample_rows)
-        # Pandas will automatically attempt to convert data to datetime where possible
-        # It does so poorly, in my experience, so will also try "manually"
-        # For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
-        for column_name in input_df.select_dtypes(include=["object"]).columns:
-            mask = (input_df[column_name].isna() | input_df[column_name].isnull())
-            s = input_df[~mask][column_name]
-            # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            s = s.sample(min(object_sampling_limit, s.size))
-            failure_count = 0
-            for item in list(s):
-                try:
-                    convert_str_to_datetime(item)
-                except Exception as e:
-                    failure_count += 1
-            failure_ratio = failure_count / s.size
-            if failure_ratio <= object_conversion_allowed_error_rate:
-                logger.info(f"Casting column '{column_name}' as a datetime ...")
-                input_df[column_name] = pd.to_datetime(input_df[column_name].apply(safe_convert_str_to_datetime))
-            else:
-                logger.info(f"Error rate of {100*failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
-                failure_count = 0
-                for item in list(s):
-                    try:
-                        float(item)
-                    except Exception as e:
-                        failure_count += 1
-                failure_ratio = failure_count / s.size
-                if failure_ratio <= object_conversion_allowed_error_rate:
-                    logger.info(f"Casting column '{column_name}' as numeric ...")
-                    input_df[column_name] = pd.to_numeric(input_df[column_name], errors="coerce")
-                else:
-                    logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
 
     # Data has been read into input_df, now process it
     if input_df.shape[0] == 0:
         logger.critical(f"There is no data in '{input_path + input_query}'.")
         exit()
+    """
+    Pandas will automatically attempt to convert data to datetime where possible
+    It does so poorly, in my experience, so will also try "manually"
+    For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
+    """
+    for column_name in input_df.select_dtypes(include=["object"]).columns:
+        logger.info(f"Examining datatype for column '{column_name}' ...")
+        mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+        s = input_df[~mask][column_name]
+        # Sample up to DATATYPE_SAMPLING_SIZE non-null values
+        a_sample = s.sample(min(object_sampling_limit, s.size))
+        failure_count = 0
+        for item in list(a_sample):
+            try:
+                convert_str_to_datetime(item)
+            except Exception as e:
+                failure_count += 1
+        failure_ratio = failure_count / a_sample.size
+        if failure_ratio <= object_conversion_allowed_error_rate:
+            logger.info(f"Casting column '{column_name}' as a datetime ...")
+            input_df[column_name] = pd.to_datetime(s.apply(safe_convert_str_to_datetime))
+            datatype_dict[column_name] = DATETIME
+        else:
+            logger.info(
+                f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
+            failure_count = 0
+            for item in list(a_sample):
+                try:
+                    float(item)
+                except Exception as e:
+                    failure_count += 1
+            failure_ratio = failure_count / a_sample.size
+            if failure_ratio <= object_conversion_allowed_error_rate:
+                logger.info(f"Casting column '{column_name}' as numeric ...")
+                input_df[column_name] = pd.to_numeric(s, errors="coerce")
+                datatype_dict[column_name] = NUMBER
+            else:
+                logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
+                logger.info(f"Will keep column '{column_name}' as a string.")
+                datatype_dict[column_name] = STRING
     # To temporarily hold plots and html files
     tempdir = tempfile.TemporaryDirectory()
     tempdir_path = Path(tempdir.name)
@@ -604,7 +675,8 @@ if __name__ == "__main__":
     summary_dict = dict()  # To be converted into the summary worksheet
     detail_dict = dict()  # Each element to be converted into a detail worksheet
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
-    for column_name, datatype in dict(input_df.dtypes).items():
+    # for column_name, datatype in dict(input_df.dtypes).items():
+    for column_name in input_df.columns:
         values = input_df[column_name]
         if False and not column_name.startswith("pre"):  # For testing
             continue
@@ -628,7 +700,7 @@ if __name__ == "__main__":
         column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
 
         # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
-        datatype = convert_datatype(datatype)
+        datatype = datatype_dict[column_name]
 
         if null_count != row_count:
 
@@ -653,11 +725,11 @@ if __name__ == "__main__":
                 column_dict[SHORTEST] = np.nan
                 column_dict[LONGEST] = np.nan
                 # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = non_null_df[column_name].mean()
-                column_dict[STDDEV] = non_null_df[column_name].std()
-                column_dict[PERCENTILE_25TH] = non_null_df[column_name].quantile(0.25)
-                column_dict[MEDIAN] = non_null_df[column_name].quantile(0.5)
-                column_dict[PERCENTILE_75TH] = non_null_df[column_name].quantile(0.75)
+                column_dict[MEAN] = non_null_df[column_name].astype(FLOAT).mean()
+                column_dict[STDDEV] = non_null_df[column_name].astype(FLOAT).std()
+                column_dict[PERCENTILE_25TH] = non_null_df[column_name].astype(FLOAT).quantile(0.25)
+                column_dict[MEDIAN] = non_null_df[column_name].astype(FLOAT).quantile(0.5)
+                column_dict[PERCENTILE_75TH] = non_null_df[column_name].astype(FLOAT).quantile(0.75)
             elif datatype == DATETIME:
                 # Largest & smallest
                 # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
@@ -689,7 +761,10 @@ if __name__ == "__main__":
                 most_common_datetime_list = list()
                 for item, count in most_common_list:
                     # Convert datetime to string because openpyxl does not support datetimes with timezones
-                    most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                    try:
+                        most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                    except ValueError as e:
+                        most_common_datetime_list.append(("", count))
                 most_common_list = most_common_datetime_list
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
@@ -710,7 +785,7 @@ if __name__ == "__main__":
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
         if datatype == STRING and row_count:
-            pattern_counter = get_pattern(non_null_df)
+            pattern_counter = get_pattern(non_null_df[column_name])
             max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
             pattern_df = pd.DataFrame()
@@ -722,11 +797,15 @@ if __name__ == "__main__":
             pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
             pattern_dict[column_name] = pattern_df
         else:  # Numeric/datetime data
+            try:
+                values_to_plot = values.astype(FLOAT)
+            except TypeError as e:
+                values_to_plot = values
             if len(plot_data) >= plot_values_limit:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
-                ax = values.plot.hist(bins=min(20, len(values)))
+                ax = values_to_plot.plot.hist(bins=min(20, len(values_to_plot)))
                 ax.set_xlabel(column_name)
                 ax.set_ylabel("Count")
                 plt.savefig(plot_output_path)
@@ -744,7 +823,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[0],
                     data=None,
-                    x=non_null_df[column_name],
+                    x=values_to_plot,
                     showfliers=True,
                     orient="h"
                 )
@@ -752,7 +831,7 @@ if __name__ == "__main__":
                 sns.boxplot(
                     ax=axs[1],
                     data=None,
-                    x=non_null_df[column_name],
+                    x=values_to_plot,
                     showfliers=False,
                     orient="h"
                 )
