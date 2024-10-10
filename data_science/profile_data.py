@@ -631,6 +631,9 @@ if __name__ == "__main__":
         logger.info(f"Examining datatype for column '{column_name}' ...")
         mask = (input_df[column_name].isna() | input_df[column_name].isnull())
         s = input_df[~mask][column_name]
+        if not s.size:
+            # Column empty, we don't care about the type
+            continue
         # Sample up to DATATYPE_SAMPLING_SIZE non-null values
         a_sample = s.sample(min(object_sampling_limit, s.size))
         failure_count = 0
