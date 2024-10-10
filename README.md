@@ -26,6 +26,11 @@ The URL at that time was https://www.kaggle.com/datasets/cityofLA/la-restaurant-
 - `source your_dir/bin/activate`  # or on Windows `your_dir\Scripts\activate.bat`
 - `pip install -r requirements.txt`
 
+### Database support
+As-is this program supports Microsoft SQL Server, Postgresql and Snowflake.
+
+Supporting additional database flavors _should_ be a matter of adding the appropriate JDBC jar to `data_science/data_science/lib/jars` and editing `data_science/config/config.yaml`.
+
 ### Execution
     $ python data_science/profile_data.py -h
     usage: profile_data.py [-h] [--header-lines NUM] [--delimiter CHAR] [--sample-rows NUM]

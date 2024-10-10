@@ -14,10 +14,11 @@ from typing import Union, Optional, Type, Tuple
 import unicodedata
 # Imports above are standard Python
 # Imports below are 3rd-party
+from dotenv import dotenv_values
 import pendulum
 import jaydebeapi as jdbc
+import snowflake.connector  # Really hard to figure out jaydebeapi<-->Snowflake
 from yaml import load, dump
-
 try:
     from yaml import CLoader as Loader, CDumper as Dumper
 except ImportError:
@@ -173,19 +174,29 @@ class Database:
                     break
             else:
                 raise Exception(f"I don't know what kind of database listens on port {port_number}.")
-            classpath = Path(config_dict[C.JDBC][C.JAR][database_type_name])
-            absolute_classpath = Path(__file__).parent.parent / classpath
-            os.environ[C.CLASSPATH] = os.environ.get(C.CLASSPATH, "") + path_separator + classpath.as_posix()
-            connection_string = config_dict[C.JDBC][C.CONNECTION_STRING][database_type_name]
-            connection_string = connection_string.replace("put_host_name_here", host_name)
-            connection_string = connection_string.replace("put_port_number_here", str(port_number))
-            connection_string = connection_string.replace("put_database_name_here", database_name)
-            cls.database_connection = jdbc.connect(config_dict[C.JDBC][C.CLASS_NAME][database_type_name],
-                                      connection_string,
-                                      [user_name, password],
-                                      absolute_classpath.as_posix())
+            # Special treatment for Snowflake
+            if database_type_name == "snowflake":
+                cls.database_connection = snowflake.connector.connect(
+                    account=host_name,
+                    user=user_name,
+                    password=password,
+                    database=database_name,
+                    autocommit=auto_commit,
+                )
+            else:
+                classpath = Path(config_dict[C.JDBC][C.JAR][database_type_name])
+                absolute_classpath = Path(__file__).parent.parent / classpath
+                os.environ[C.CLASSPATH] = os.environ.get(C.CLASSPATH, "") + path_separator + classpath.as_posix()
+                connection_string = config_dict[C.JDBC][C.CONNECTION_STRING][database_type_name]
+                connection_string = connection_string.replace("put_host_name_here", host_name)
+                connection_string = connection_string.replace("put_port_number_here", str(port_number))
+                connection_string = connection_string.replace("put_database_name_here", database_name)
+                cls.database_connection = jdbc.connect(config_dict[C.JDBC][C.CLASS_NAME][database_type_name],
+                                          connection_string,
+                                          [user_name, password],
+                                          absolute_classpath.as_posix())
+                cls.database_connection.jconn.setAutoCommit(auto_commit)
             cls.logger.info("... connected.")
-            cls.database_connection.jconn.setAutoCommit(auto_commit)
             cls.__instance = object.__new__(cls)
         return cls.__instance
 
@@ -326,8 +337,8 @@ def get_line_count(file_path: Union[str, Path]) -> int:
 
 
 if __name__ == "__main__":
-    logger = Logger().get_logger()
-    logger.info("a logging message")
+    # logger = Logger().get_logger()
+    # logger.info("a logging message")
     # mydb = Database(
     #     host_name="localhost",
     #     port_number=1433,
@@ -335,13 +346,20 @@ if __name__ == "__main__":
     #     user_name="sa",
     #     password="!1Jkrvhmhzyjwc"
     # )
+    environment_settings_dict = {
+        **os.environ,
+        **dotenv_values("../../.env"),
+    }
+    os.environ["JAVA_HOME"] = "C:/Program Files/Java/jdk-22"
     mydb = Database(
-        host_name="localhost",
-        port_number=5432,
-        database_name="example",
-        user_name="postgres",
-        password="password"
+        host_name=environment_settings_dict["HOST_NAME"],
+        port_number=environment_settings_dict["PORT_NUMBER"],
+        database_name=environment_settings_dict["DATABASE_NAME"],
+        user_name=environment_settings_dict["USER_NAME"],
+        password=environment_settings_dict["PASSWORD"],
     )
+    print(mydb)
+    exit()
     query = """
         SELECT * from my_table
         """
