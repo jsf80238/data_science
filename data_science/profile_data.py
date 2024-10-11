@@ -561,6 +561,12 @@ if __name__ == "__main__":
     else:
         logger = Logger().get_logger()
 
+
+    # Verify we have permission to write to the output file
+    if is_excel_output:
+        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
+        if output_file.exists():
+            os.remove(output_file)
     # Now, read the data
     input_df = None
     data_dict = defaultdict(list)
