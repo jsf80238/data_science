@@ -35,89 +35,90 @@ Supporting additional database flavors _should_ be a matter of adding the approp
     $ python data_science/profile_data.py -h
     usage: profile_data.py [-h] [--header-lines NUM] [--delimiter CHAR] [--sample-rows NUM]
                            [--max-detail-values NUM] [--max-pattern-length NUM]
-                           [--plot-values-limit NUM] [--max-longest-string NUM]
-                           [--object-sampling-limit NUM]
-                           [--object-conversion-allowed-error-rate NUM]
-                           [--target-dir /path/to/dir] [--html] [--db-host-name HOST_NAME]
-                           [--db-port-number PORT_NUMBER] [--db-name DATABASE_NAME]
-                           [--db-user-name USER_NAME] [--db-password PASSWORD]
+                           [--plot-values-limit NUM] [--no-pattern] [--no-histogram] [--no-box]
+                           [--no-pie] [--no-visual] [--max-longest-string NUM]
+                           [--object-sampling-limit NUM] [--object-conversion-allowed-error-rate NUM]
+                           [--target-dir /path/to/dir] [--html] [--get-cleaned-version FILE_NAME]
+                           [--db-host-name HOST_NAME] [--db-port-number PORT_NUMBER]
+                           [--db-name DATABASE_NAME] [--db-user-name USER_NAME] [--db-password PASSWORD]
                            [--environment-file /path/to/file] [--verbose | --terse]
                            /path/to/input_data_file.extension | query-against-database
     
-    Profile the data in a database or file. Generates an analysis consisting tables and images
-    stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis
-    with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question
-    mark replacing everything else. For numeric and datetime columns produces a histogram and
-    box plots.
+    Profile the data in a database or file. Generates an analysis consisting tables and images stored in
+    an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing
+    letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything
+    else. For numeric and datetime columns produces a histogram and box plots.
     
     positional arguments:
       /path/to/input_data_file.extension | query-against-database
-                            An example query is 'select a, b, c from t where x>7'. File names
-                            must end in csv, dat, txt, dsv or parquet. See also --delimiter.
+                            An example query is 'select a, b, c from t where x>7'. File names must end
+                            in csv, dat, txt, dsv or parquet. See also --delimiter.
     
     options:
       -h, --help            show this help message and exit
-      --header-lines NUM    When reading from a file specifies the number of rows to skip UNTIL
-                            the header row. Ignored when getting data from a database. Default
-                            is 0. (must be in range 1..=9223372036854775807)
-      --delimiter CHAR      Use this character to delimit columns, default is a comma. Ignored
-                            when getting data from a database or a parquet file.
-      --sample-rows NUM     When reading from a file randomly choose this number of rows. If
-                            greater than or equal to the number of data rows will use all rows.
-                            Ignored when getting data from a database. (must be in range
-                            1..=9223372036854775807)
+      --header-lines NUM    When reading from a file specifies the number of rows to skip UNTIL the
+                            header row. Ignored when getting data from a database. Default is 0. (must
+                            be in range 1..=9223372036854775807)
+      --delimiter CHAR      Use this character to delimit columns, default is a comma. Ignored when
+                            getting data from a database or a parquet file.
+      --sample-rows NUM     When reading from a file randomly choose this number of rows. If greater
+                            than or equal to the number of data rows will use all rows. Ignored when
+                            getting data from a database. (must be in range 1..=9223372036854775807)
       --max-detail-values NUM
-                            Produce this many of the top value occurrences, default is 35.
-                            (must be in range 1..=9223372036854775807)
+                            Produce this many of the top value occurrences, default is 35. (must be in
+                            range 1..=9223372036854775807)
       --max-pattern-length NUM
-                            When segregating strings into patterns leave untouched strings of
-                            length greater than this, default is 50. (must be in range
-                            1..=9223372036854775807)
+                            When segregating strings into patterns leave untouched strings of length
+                            greater than this, default is 50. (must be in range 1..=9223372036854775807)
       --plot-values-limit NUM
-                            Don't make histograms or box plots when there are fewer than this
-                            number of distinct values, and don't make pie charts when there are
-                            more than this number of distinct values, default is 8. (must be in
-                            range 1..=9223372036854775807)
+                            Don't make histograms or box plots when there are fewer than this number of
+                            distinct values, and don't make pie charts when there are more than this
+                            number of distinct values, default is 8. (must be in range
+                            1..=9223372036854775807)
+      --no-pattern          Don't identify patterns in text columns.
+      --no-histogram        Don't make histograms.
+      --no-box              Don't make box plots.
+      --no-pie              Don't make pie charts.
+      --no-visual           Don't make histograms or box plots or pie charts.
       --max-longest-string NUM
-                            When displaying long strings show a summary if string exceeds this
-                            length, default is 50. (must be in range 50..=9223372036854775807)
+                            When displaying long strings show a summary if string exceeds this length,
+                            default is 50. (must be in range 50..=9223372036854775807)
       --object-sampling-limit NUM
-                            To determine whether a string column can be treated as datetime or
-                            numeric sample this number of values, default is 500. (must be in
-                            range 1..=9223372036854775807)
+                            To determine whether a string column can be treated as datetime or numeric
+                            sample this number of values, default is 500. (must be in range
+                            1..=9223372036854775807)
       --object-conversion-allowed-error-rate NUM
-                            To determine whether a string column can be treated as datetime or
-                            numeric allow up to this percentage of values to remain un-
-                            parseable, default is 5. (must be in range 1..=100)
+                            To determine whether a string column can be treated as datetime or numeric
+                            allow up to this percentage of values to remain un-parseable, default is 5.
+                            (must be in range 1..=100)
       --target-dir /path/to/dir
-                            Default is the current directory. Will make intermediate
-                            directories as necessary.
+                            Default is the current directory. Will make intermediate directories as
+                            necessary.
       --html                Also produce a zip file containing the results in HTML format.
       --get-cleaned-version FILE_NAME
-                            Output the Pandas data frame in CSV or Parquet format. Might be
-                            useful if string columns were converted to datetimes/numerics. File
-                            name must end in '.csv' or '.parquet'.
+                            Output the Pandas data frame in CSV or Parquet format. Might be useful if
+                            string columns were converted to datetimes/numerics. File name must end in
+                            '.csv' or '.parquet'.
       --db-host-name HOST_NAME
-                            Overrides HOST_NAME environment variable. Ignored when getting data
-                            from a file.
+                            Overrides HOST_NAME environment variable. Ignored when getting data from a
+                            file.
       --db-port-number PORT_NUMBER
-                            Overrides PORT_NUMBER environment variable. Ignored when getting
-                            data from a file.
+                            Overrides PORT_NUMBER environment variable. Ignored when getting data from a
+                            file.
       --db-name DATABASE_NAME
-                            Overrides DATABASE_NAME environment variable. Ignored when getting
-                            data from a file.
+                            Overrides DATABASE_NAME environment variable. Ignored when getting data from
+                            a file.
       --db-user-name USER_NAME
-                            Overrides USER_NAME environment variable. Ignored when getting data
-                            from a file.
+                            Overrides USER_NAME environment variable. Ignored when getting data from a
+                            file.
       --db-password PASSWORD
-                            Overrides PASSWORD environment variable. Ignored when getting data
-                            from a file.
+                            Overrides PASSWORD environment variable. Ignored when getting data from a
+                            file.
       --environment-file /path/to/file
                             An additional source of database connection information. Overrides
                             environment settings.
       --verbose
       --terse
-
 - Download your data.
 - `python data_science/python profile_data.py ~/Downloads/restaurant-and-market-health-inspections.csv`
 - View the results from `analysis.xlsx` in your current directory, or the `--target-dir` directory if provided.
@@ -236,6 +237,10 @@ Now, details by column.
 **Write reformatted numerics or datetimes back to a file**
 
     $ python data_science/profile_data.py --tar=/tmp --get-clean=reformatted.csv /path/to/datafile.csv
+
+**Don't produce box plots or string pattern analyses**
+
+    $ python data_science/profile_data.py --tar=/tmp --no-box --no-pattern /path/to/datafile.csv
 
 ## Potential improvements
 - Check for duplicate data.

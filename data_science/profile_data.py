@@ -439,6 +439,9 @@ if __name__ == "__main__":
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_PLOT_VALUES_LIMIT,
                         help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {DEFAULT_PLOT_VALUES_LIMIT}.")
+    parser.add_argument('--no-pattern',
+                        action='store_true',
+                        help=f"Don't identify patterns in text columns.")
     parser.add_argument('--no-histogram',
                         action='store_true',
                         help=f"Don't make histograms.")
@@ -528,6 +531,7 @@ if __name__ == "__main__":
     cleaned_version_output_file = args.get_cleaned_version
     is_html_output = args.html
     is_excel_output = True
+    is_pattern = not args.no_pattern
     is_histogram = not args.no_histogram and not args.no_visual
     is_box = not args.no_box and not args.no_visual
     is_pie = not args.no_pie and not args.no_visual
@@ -602,8 +606,11 @@ if __name__ == "__main__":
             # Store data
             for column_name, value in row.items():
                 data_dict[column_name].append(value)
+        # Provide row count
+        for key, value_list in data_dict.items():
+            logger.info(f"Data read: {len(value_list)} rows.")
+            break
         # Determine datatype
-        logger.info("Data read.")
         for item in cursor.description:
             column_name, dbapi_type_code, display_size, internal_size, precision, scale, null_ok = item
             type_code_desc = str(dbapi_type_code).upper()
@@ -806,7 +813,7 @@ if __name__ == "__main__":
         values = pd.Series(values)
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
-        if datatype == STRING and row_count:
+        if is_pattern and datatype == STRING and row_count:
             pattern_counter = get_pattern(non_null_df[column_name])
             max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
