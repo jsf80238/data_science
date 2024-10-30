@@ -439,13 +439,24 @@ if __name__ == "__main__":
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_PLOT_VALUES_LIMIT,
                         help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {DEFAULT_PLOT_VALUES_LIMIT}.")
+    parser.add_argument('--no-histogram',
+                        action='store_true',
+                        help=f"Don't make histograms.")
+    parser.add_argument('--no-box',
+                        action='store_true',
+                        help=f"Don't make box plots.")
+    parser.add_argument('--no-pie',
+                        action='store_true',
+                        help=f"Don't make pie charts.")
+    parser.add_argument('--no-visual',
+                        action='store_true',
+                        help=f"Don't make histograms or box plots or pie charts.")
     parser.add_argument('--max-longest-string',
                         type=int,
                         metavar="NUM",
                         action=range_action(50, sys.maxsize),
                         default=DEFAULT_LONGEST_LONGEST,
                         help=f"When displaying long strings show a summary if string exceeds this length, default is {DEFAULT_LONGEST_LONGEST}.")
-
     parser.add_argument('--object-sampling-limit',
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
@@ -517,6 +528,9 @@ if __name__ == "__main__":
     cleaned_version_output_file = args.get_cleaned_version
     is_html_output = args.html
     is_excel_output = True
+    is_histogram = not args.no_histogram and not args.no_visual
+    is_box = not args.no_box and not args.no_visual
+    is_pie = not args.no_pie and not args.no_visual
     target_dir = Path(args.target_dir)
 
     environment_settings_dict = {
@@ -809,7 +823,7 @@ if __name__ == "__main__":
                 values_to_plot = values.astype(FLOAT)
             except TypeError as e:
                 values_to_plot = values
-            if len(plot_data) >= plot_values_limit:
+            if is_histogram and len(plot_data) >= plot_values_limit:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
@@ -820,7 +834,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
-            if len(non_null_df) >= plot_values_limit:
+            if is_box and len(non_null_df) >= plot_values_limit:
                 logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -849,7 +863,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
-        if len(plot_data) < plot_values_limit:
+        if is_pie and len(plot_data) < plot_values_limit:
             logger.info("Creating pie plot ...")
             plot_output_path = tempdir_path / f"{column_name}.pie.png"
             s = values.value_counts()
