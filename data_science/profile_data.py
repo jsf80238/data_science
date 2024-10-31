@@ -59,7 +59,7 @@ BLACK_SQUARE = "■"
 EXCEL = "EXCEL"
 HTML = "HTML"
 OPEN, CLOSE = "{", "}"
-FILE_BASE_NAME = "profiled_data"
+DEFAULT_FILE_BASE_NAME = "profiled_data"
 
 DATATYPE_MAPPING_DICT = {
     "BIGINT": NUMBER,
@@ -474,6 +474,10 @@ if __name__ == "__main__":
                         metavar="/path/to/dir",
                         default=Path.cwd(),
                         help="Default is the current directory. Will make intermediate directories as necessary.")
+    parser.add_argument('--output-file-name',
+                        metavar="NAME",
+                        default=DEFAULT_FILE_BASE_NAME,
+                        help=f"Default is, in order: input file name, table name from query if it can be determined, '{DEFAULT_FILE_BASE_NAME}'.")
     parser.add_argument('--html',
                         action='store_true',
                         help="Also produce a zip file containing the results in HTML format.")
@@ -536,6 +540,7 @@ if __name__ == "__main__":
     is_box = not args.no_box and not args.no_visual
     is_pie = not args.no_pie and not args.no_visual
     target_dir = Path(args.target_dir)
+    output_file_name = args.output_file_name
 
     environment_settings_dict = {
         **os.environ,
@@ -580,9 +585,20 @@ if __name__ == "__main__":
         logger = Logger().get_logger()
 
 
+    # Determine output file name if not provided on command line
+    if output_file_name == DEFAULT_FILE_BASE_NAME:
+        if input_path:
+            # Data is from a file
+            output_file_name = input_path.stem
+        else:
+            # Data is from a query
+            pattern = re.compile(r"select\s+.+from\s+([\w\.]+)", re.IGNORECASE | re.DOTALL)
+            if match := pattern.search(input_query):
+                output_file_name = match.group(1).lower()
     # Verify we have permission to write to the output file
+    # Important for Windows which will NOT clobber a file currently opened for reading
     if is_excel_output:
-        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
+        output_file = (target_dir / f"{output_file_name}{C.EXCEL_EXTENSION}")
         if output_file.exists():
             os.remove(output_file)
     # Now, read the data
@@ -610,7 +626,7 @@ if __name__ == "__main__":
         for key, value_list in data_dict.items():
             logger.info(f"Data read: {len(value_list)} rows.")
             break
-        # Determine datatype
+        # First attempt to set datatype
         for item in cursor.description:
             column_name, dbapi_type_code, display_size, internal_size, precision, scale, null_ok = item
             type_code_desc = str(dbapi_type_code).upper()
@@ -620,7 +636,6 @@ if __name__ == "__main__":
             for key in DATATYPE_MAPPING_DICT:
                 if key in type_code_desc:
                     datatype_dict[column_name] = DATATYPE_MAPPING_DICT[key]
-                    logger.info(f"Read column '{column_name}' as {DATATYPE_MAPPING_DICT[key]}.")
                     break
             else:
                 logger.error(f"Could not determine data type for column '{column_name}' based on the JDBC metadata: {str(item)}")
@@ -660,6 +675,7 @@ if __name__ == "__main__":
         s = input_df[~mask][column_name]
         if not s.size:
             # Column empty, we don't care about the type
+            logger.info(f"Column {column_name} is empty.")
             continue
         # Sample up to DATATYPE_SAMPLING_SIZE non-null values
         a_sample = s.sample(min(object_sampling_limit, s.size))
@@ -732,7 +748,6 @@ if __name__ == "__main__":
         datatype = datatype_dict[column_name]
 
         if null_count != row_count:
-
             temp = "temp"
             if datatype == STRING:
                 # Largest & smallest
@@ -806,8 +821,6 @@ if __name__ == "__main__":
             detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
             detail_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list]
             detail_dict[column_name] = detail_df
-        else:
-            logger.warning(f"Column '{column_name}' is empty.")
 
         # Produce visuals
         values = pd.Series(values)
@@ -888,7 +901,7 @@ if __name__ == "__main__":
     # Output
     if is_excel_output:
         logger.info("Writing summary ...")
-        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
+        output_file = (target_dir / f"{output_file_name}{C.EXCEL_EXTENSION}")
         writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
         result_df.to_excel(writer, sheet_name="Summary")
         # And generate a detail sheet, and optionally a pattern sheet and diagrams, for each column
@@ -946,7 +959,7 @@ if __name__ == "__main__":
 
 
     if is_html_output:
-        root_output_dir = tempdir_path / FILE_BASE_NAME
+        root_output_dir = tempdir_path / output_file_name
         columns_dir = root_output_dir / "columns"
         images_dir = root_output_dir / "images"
         os.makedirs(columns_dir)
@@ -989,7 +1002,7 @@ if __name__ == "__main__":
                     writer.write(f"<h3>Box plots</h3>")
                     writer.write(f'<img src="../images/{column_name}.box.png" alt="Box plots for column :{column_name}:">')
                 writer.write(make_html_footer())
-        with open(root_output_dir / f"{FILE_BASE_NAME}.html", "w") as writer:
+        with open(root_output_dir / f"{output_file_name}.html", "w") as writer:
             logger.info("Writing summary ...")
             writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
             # Replace column names in summary dataframe with URL links
@@ -1000,7 +1013,7 @@ if __name__ == "__main__":
             writer.write(make_html_footer())
         logger.info("Making zip archive ...")
         output_file = shutil.make_archive(
-            base_name=target_dir / FILE_BASE_NAME,
+            base_name=target_dir / output_file_name,
             format="zip",
             root_dir=tempdir_path,
             base_dir=".",

@@ -38,9 +38,10 @@ Supporting additional database flavors _should_ be a matter of adding the approp
                            [--plot-values-limit NUM] [--no-pattern] [--no-histogram] [--no-box]
                            [--no-pie] [--no-visual] [--max-longest-string NUM]
                            [--object-sampling-limit NUM] [--object-conversion-allowed-error-rate NUM]
-                           [--target-dir /path/to/dir] [--html] [--get-cleaned-version FILE_NAME]
-                           [--db-host-name HOST_NAME] [--db-port-number PORT_NUMBER]
-                           [--db-name DATABASE_NAME] [--db-user-name USER_NAME] [--db-password PASSWORD]
+                           [--target-dir /path/to/dir] [--output-file-name NAME] [--html]
+                           [--get-cleaned-version FILE_NAME] [--db-host-name HOST_NAME]
+                           [--db-port-number PORT_NUMBER] [--db-name DATABASE_NAME]
+                           [--db-user-name USER_NAME] [--db-password PASSWORD]
                            [--environment-file /path/to/file] [--verbose | --terse]
                            /path/to/input_data_file.extension | query-against-database
     
@@ -94,6 +95,9 @@ Supporting additional database flavors _should_ be a matter of adding the approp
       --target-dir /path/to/dir
                             Default is the current directory. Will make intermediate directories as
                             necessary.
+      --output-file-name NAME
+                            Default is, in order: input file name, table name from query if it can be
+                            determined, 'profiled_data'.
       --html                Also produce a zip file containing the results in HTML format.
       --get-cleaned-version FILE_NAME
                             Output the Pandas data frame in CSV or Parquet format. Might be useful if
@@ -238,9 +242,9 @@ Now, details by column.
 
     $ python data_science/profile_data.py --tar=/tmp --get-clean=reformatted.csv /path/to/datafile.csv
 
-**Don't produce box plots or string pattern analyses**
+**Don't produce box plots or string pattern analyses, and set the name of the output file**
 
-    $ python data_science/profile_data.py --tar=/tmp --no-box --no-pattern /path/to/datafile.csv
+    $ python data_science/profile_data.py --tar=/tmp --no-box --no-pattern --output-file my.preferred.name /path/to/datafile.csv
 
 ## Potential improvements
 - Check for duplicate data.
