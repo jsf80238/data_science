@@ -358,6 +358,114 @@ def safe_convert_str_to_datetime(value: str) -> pd.Timestamp:
         return None
 
 
+def cast_column(input_df: pd.DataFrame, column_name: str) -> None:
+    mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+    s = input_df[~mask][column_name]
+    # Sample up to DATATYPE_SAMPLING_SIZE non-null values
+    s = s.sample(min(object_sampling_limit, s.size))
+    failure_count = 0
+    for item in list(s):
+        try:
+            convert_str_to_datetime(item)
+        except Exception as e:
+            failure_count += 1
+    failure_ratio = failure_count / s.size
+    if failure_ratio <= object_conversion_allowed_error_rate:
+        logger.info(f"Casting column '{column_name}' as a datetime ...")
+        input_df[column_name] = pd.to_datetime(input_df[column_name].apply(safe_convert_str_to_datetime))
+    else:
+        logger.info(
+            f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
+        failure_count = 0
+        for item in list(s):
+            try:
+                float(item)
+            except Exception as e:
+                failure_count += 1
+        failure_ratio = failure_count / s.size
+        if failure_ratio <= object_conversion_allowed_error_rate:
+            logger.info(f"Casting column '{column_name}' as numeric ...")
+            input_df[column_name] = pd.to_numeric(input_df[column_name], errors="coerce")
+        else:
+            logger.info(
+                f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
+
+
+def process_column(input_df: pd.DataFrame, column_name: str) -> dict:
+    # A list of non-null values are useful for some calculations below
+    mask = (input_df[column_name].isna() | input_df[column_name].isnull())
+    non_null_df = input_df[~mask][column_name].to_frame()
+    logger.info(f"Working on column '{column_name}' ...")
+    column_dict = dict.fromkeys(ANALYSIS_LIST)
+    # Row count
+    row_count = values.size
+    column_dict[ROW_COUNT] = row_count
+    # Null
+    null_count = row_count - non_null_df.shape[0]
+    column_dict[NULL_COUNT] = null_count
+    # Null%
+    column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
+    # Unique
+    unique_count = values.nunique(dropna=False)
+    column_dict[UNIQUE_COUNT] = unique_count
+    # Unique%
+    column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
+
+    # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
+    datatype = datatype_dict[column_name]
+
+    if null_count != row_count:
+
+        temp = "temp"
+        if datatype == STRING:
+            # Largest & smallest
+            column_dict[LARGEST] = format_long_string(non_null_df[column_name].max(), max_longest_string)
+            column_dict[SMALLEST] = format_long_string(non_null_df[column_name].min(), max_longest_string)
+            # Longest & shortest
+            non_null_df[temp] = non_null_df[column_name].str.len()
+            x = non_null_df.sort_values([temp], ascending=True, axis=0)
+            column_dict[SHORTEST] = x[column_name].iloc[0]
+            x = non_null_df.sort_values([temp], ascending=False, axis=0)
+            longest_string = x[column_name].iloc[0]
+            column_dict[LONGEST] = format_long_string(longest_string, max_longest_string)
+            # No mean/quartiles/stddev statistics for strings
+        elif datatype == NUMBER:
+            # Largest & smallest
+            column_dict[LARGEST] = non_null_df[column_name].max()
+            column_dict[SMALLEST] = non_null_df[column_name].min()
+            # No longest/shortest for numbers and dates
+            column_dict[SHORTEST] = np.nan
+            column_dict[LONGEST] = np.nan
+            # Mean/quartiles/stddev statistics
+            column_dict[MEAN] = non_null_df[column_name].astype(FLOAT).mean()
+            column_dict[STDDEV] = non_null_df[column_name].astype(FLOAT).std()
+            column_dict[PERCENTILE_25TH] = non_null_df[column_name].astype(FLOAT).quantile(0.25)
+            column_dict[MEDIAN] = non_null_df[column_name].astype(FLOAT).quantile(0.5)
+            column_dict[PERCENTILE_75TH] = non_null_df[column_name].astype(FLOAT).quantile(0.75)
+        elif datatype == DATETIME:
+            # Largest & smallest
+            # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
+            column_dict[LARGEST] = non_null_df[column_name].max().strftime(DATE_FORMAT)
+            column_dict[SMALLEST] = non_null_df[column_name].min().strftime(DATE_FORMAT)
+            # No longest/shortest for numbers and dates
+            column_dict[SHORTEST] = np.nan
+            column_dict[LONGEST] = np.nan
+            # Mean/quartiles/stddev statistics
+            non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
+            # For the next four lines convert datetime to string because openpyxl does not support datetimes with timezones
+            column_dict[MEAN] = datetime.fromtimestamp(non_null_df[temp].mean()).strftime(DATE_FORMAT)
+            column_dict[PERCENTILE_25TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.25)).strftime(
+                DATE_FORMAT)
+            column_dict[MEDIAN] = datetime.fromtimestamp(non_null_df[temp].quantile(0.5)).strftime(DATE_FORMAT)
+            column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.75)).strftime(
+                DATE_FORMAT)
+            column_dict[STDDEV] = non_null_df[
+                                      temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
+        else:
+            raise Exception("Programming error.")
+    return column_dict.copy()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Profile the data in a database or file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
@@ -580,34 +688,7 @@ if __name__ == "__main__":
         # It does so poorly, in my experience, so will also try "manually"
         # For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
         for column_name in input_df.select_dtypes(include=["object"]).columns:
-            mask = (input_df[column_name].isna() | input_df[column_name].isnull())
-            s = input_df[~mask][column_name]
-            # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-            s = s.sample(min(object_sampling_limit, s.size))
-            failure_count = 0
-            for item in list(s):
-                try:
-                    convert_str_to_datetime(item)
-                except Exception as e:
-                    failure_count += 1
-            failure_ratio = failure_count / s.size
-            if failure_ratio <= object_conversion_allowed_error_rate:
-                logger.info(f"Casting column '{column_name}' as a datetime ...")
-                input_df[column_name] = pd.to_datetime(input_df[column_name].apply(safe_convert_str_to_datetime))
-            else:
-                logger.info(f"Error rate of {100*failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
-                failure_count = 0
-                for item in list(s):
-                    try:
-                        float(item)
-                    except Exception as e:
-                        failure_count += 1
-                failure_ratio = failure_count / s.size
-                if failure_ratio <= object_conversion_allowed_error_rate:
-                    logger.info(f"Casting column '{column_name}' as numeric ...")
-                    input_df[column_name] = pd.to_numeric(input_df[column_name], errors="coerce")
-                else:
-                    logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
+            cast_column(input_df, column_name)
 
     # Data has been read into input_df, now process it
     if input_df.shape[0] == 0:
@@ -628,170 +709,104 @@ if __name__ == "__main__":
     pattern_dict = dict()  # For each string column calculate the frequency of patterns
     # for column_name, datatype in dict(input_df.dtypes).items():
     for column_name in input_df.columns:
-        values = input_df[column_name]
         if False and not column_name.startswith("pre"):  # For testing
             continue
-        # A list of non-null values are useful for some calculations below
-        mask = (input_df[column_name].isna() | input_df[column_name].isnull())
-        non_null_df = input_df[~mask][column_name].to_frame()
-        logger.info(f"Working on column '{column_name}' ...")
-        column_dict = dict.fromkeys(ANALYSIS_LIST)
-        # Row count
-        row_count = values.size
-        column_dict[ROW_COUNT] = row_count
-        # Null
-        null_count = row_count - non_null_df.shape[0]
-        column_dict[NULL_COUNT] = null_count
-        # Null%
-        column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
-        # Unique
-        unique_count = values.nunique(dropna=False)
-        column_dict[UNIQUE_COUNT] = unique_count
-        # Unique%
-        column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
-
-        # Convert the various types of Pandas datatypes into one of: STRING, NUMBER, DATETIME
+        values = input_df[column_name].values
+        column_dict = process_column(input_df, column_name)
+        summary_dict[column_name] = column_dict
         datatype = datatype_dict[column_name]
+        row_count = 0
 
-        if null_count != row_count:
+        # Value counts
+        # Collect no more than number of values available or what was given on the command-line
+        # whichever is less
+        counter = Counter(values.to_list())
+        max_length = min(max_detail_values, values.size)
+        most_common_list = counter.most_common(max_length)
+        if datatype == DATETIME:
+            most_common_datetime_list = list()
+            for item, count in most_common_list:
+                # Convert datetime to string because openpyxl does not support datetimes with timezones
+                try:
+                    most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
+                except ValueError as e:
+                    most_common_datetime_list.append(("", count))
+            most_common_list = most_common_datetime_list
+        most_common, most_common_count = most_common_list[0]
+        column_dict[MOST_COMMON] = most_common
+        column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
+        detail_df = pd.DataFrame()
+        # Create 3-column descending visual
+        detail_df["rank"] = list(range(1, len(most_common_list) + 1))
+        detail_df["value"] = [x[0] for x in most_common_list]
+        detail_df["count"] = [x[1] for x in most_common_list]
+        detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
+        detail_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list]
+        detail_dict[column_name] = detail_df
+    else:
+        logger.warning(f"Column '{column_name}' is empty.")
 
-            temp = "temp"
-            if datatype == STRING:
-                # Largest & smallest
-                column_dict[LARGEST] = format_long_string(non_null_df[column_name].max(), max_longest_string)
-                column_dict[SMALLEST] = format_long_string(non_null_df[column_name].min(), max_longest_string)
-                # Longest & shortest
-                non_null_df[temp] = non_null_df[column_name].str.len()
-                x = non_null_df.sort_values([temp], ascending=True, axis=0)
-                column_dict[SHORTEST] = x[column_name].iloc[0]
-                x = non_null_df.sort_values([temp], ascending=False, axis=0)
-                longest_string = x[column_name].iloc[0]
-                column_dict[LONGEST] = format_long_string(longest_string, max_longest_string)
-                # No mean/quartiles/stddev statistics for strings
-            elif datatype == NUMBER:
-                # Largest & smallest
-                column_dict[LARGEST] = non_null_df[column_name].max()
-                column_dict[SMALLEST] = non_null_df[column_name].min()
-                # No longest/shortest for numbers and dates
-                column_dict[SHORTEST] = np.nan
-                column_dict[LONGEST] = np.nan
-                # Mean/quartiles/stddev statistics
-                column_dict[MEAN] = non_null_df[column_name].astype(FLOAT).mean()
-                column_dict[STDDEV] = non_null_df[column_name].astype(FLOAT).std()
-                column_dict[PERCENTILE_25TH] = non_null_df[column_name].astype(FLOAT).quantile(0.25)
-                column_dict[MEDIAN] = non_null_df[column_name].astype(FLOAT).quantile(0.5)
-                column_dict[PERCENTILE_75TH] = non_null_df[column_name].astype(FLOAT).quantile(0.75)
-            elif datatype == DATETIME:
-                # Largest & smallest
-                # For the next two lines convert datetime to string because openpyxl does not support datetimes with timezones
-                column_dict[LARGEST] = non_null_df[column_name].max().strftime(DATE_FORMAT)
-                column_dict[SMALLEST] = non_null_df[column_name].min().strftime(DATE_FORMAT)
-                # No longest/shortest for numbers and dates
-                column_dict[SHORTEST] = np.nan
-                column_dict[LONGEST] = np.nan
-                # Mean/quartiles/stddev statistics
-                non_null_df[temp] = non_null_df[column_name].astype('int64') // 1e9
-                # For the next four lines convert datetime to string because openpyxl does not support datetimes with timezones
-                column_dict[MEAN] = datetime.fromtimestamp(non_null_df[temp].mean()).strftime(DATE_FORMAT)
-                column_dict[PERCENTILE_25TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.25)).strftime(DATE_FORMAT)
-                column_dict[MEDIAN] = datetime.fromtimestamp(non_null_df[temp].quantile(0.5)).strftime(DATE_FORMAT)
-                column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(non_null_df[temp].quantile(0.75)).strftime(DATE_FORMAT)
-                column_dict[STDDEV] = non_null_df[temp].std() / 24 / 60 / 60  # Report standard deviation of datetimes in units of days
-            else:
-                raise Exception("Programming error.")
-
-            summary_dict[column_name] = column_dict
-
-            # Value counts
-            # Collect no more than number of values available or what was given on the command-line
-            # whichever is less
-            counter = Counter(values.to_list())
-            max_length = min(max_detail_values, values.size)
-            most_common_list = counter.most_common(max_length)
-            if datatype == DATETIME:
-                most_common_datetime_list = list()
-                for item, count in most_common_list:
-                    # Convert datetime to string because openpyxl does not support datetimes with timezones
-                    try:
-                        most_common_datetime_list.append((item.strftime(DATE_FORMAT), count))
-                    except ValueError as e:
-                        most_common_datetime_list.append(("", count))
-                most_common_list = most_common_datetime_list
-            most_common, most_common_count = most_common_list[0]
-            column_dict[MOST_COMMON] = most_common
-            column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
-            detail_df = pd.DataFrame()
-            # Create 3-column descending visual
-            detail_df["rank"] = list(range(1, len(most_common_list) + 1))
-            detail_df["value"] = [x[0] for x in most_common_list]
-            detail_df["count"] = [x[1] for x in most_common_list]
-            detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
-            detail_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list]
-            detail_dict[column_name] = detail_df
-        else:
-            logger.warning(f"Column '{column_name}' is empty.")
-
-        # Produce visuals
-        values = pd.Series(values)
-        plot_data = values.value_counts(normalize=True)
-        # Produce a pattern analysis for strings
-        if datatype == STRING and row_count:
-            pattern_counter = get_pattern(non_null_df[column_name])
-            max_length = min(max_detail_values, len(non_null_df))
-            most_common_pattern_list = pattern_counter.most_common(max_length)
-            pattern_df = pd.DataFrame()
-            # Create 3-column descending visual
-            pattern_df["rank"] = list(range(1, len(most_common_pattern_list) + 1))
-            pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
-            pattern_df["count"] = [x[1] for x in most_common_pattern_list]
-            pattern_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_pattern_list]
-            pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
-            pattern_dict[column_name] = pattern_df
-        else:  # Numeric/datetime data
-            try:
-                values_to_plot = values.astype(FLOAT)
-            except TypeError as e:
-                values_to_plot = values
-            if len(plot_data) >= plot_values_limit:
-                logger.info("Creating a histogram plot ...")
-                plot_output_path = tempdir_path / f"{column_name}.histogram.png"
-                plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
-                ax = values_to_plot.plot.hist(bins=min(20, len(values_to_plot)))
-                ax.set_xlabel(column_name)
-                ax.set_ylabel("Count")
-                plt.savefig(plot_output_path)
-                plt.close('all')  # Save memory
-                logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
-                histogram_plot_list.append(column_name)
-            if len(non_null_df) >= plot_values_limit:
-                logger.info("Creating box plots ...")
-                plot_output_path = tempdir_path / f"{column_name}.box.png"
-                fig, axs = plt.subplots(
-                    nrows=2,
-                    ncols=1,
-                    figsize=(PLOT_SIZE_X, PLOT_SIZE_Y)
-                )
-                sns.boxplot(
-                    ax=axs[0],
-                    data=None,
-                    x=values_to_plot,
-                    showfliers=True,
-                    orient="h"
-                )
-                axs[0].set_xlabel(f"'{column_name}' with outliers")
-                sns.boxplot(
-                    ax=axs[1],
-                    data=None,
-                    x=values_to_plot,
-                    showfliers=False,
-                    orient="h"
-                )
-                axs[1].set_xlabel(f"'{column_name}' without outliers")
-                #plt.subplots_adjust(left=1, right=4, bottom=0.75, top=3, wspace=0.5, hspace=3)
-                plt.savefig(plot_output_path)
-                plt.close('all')  # Save memory
-                logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
-                box_plot_list.append(column_name)
+    # Produce visuals
+    values = pd.Series(values)
+    plot_data = values.value_counts(normalize=True)
+    # Produce a pattern analysis for strings
+    if datatype == STRING and row_count:
+        pattern_counter = get_pattern(non_null_df[column_name])
+        max_length = min(max_detail_values, len(non_null_df))
+        most_common_pattern_list = pattern_counter.most_common(max_length)
+        pattern_df = pd.DataFrame()
+        # Create 3-column descending visual
+        pattern_df["rank"] = list(range(1, len(most_common_pattern_list) + 1))
+        pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
+        pattern_df["count"] = [x[1] for x in most_common_pattern_list]
+        pattern_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_pattern_list]
+        pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
+        pattern_dict[column_name] = pattern_df
+    else:  # Numeric/datetime data
+        try:
+            values_to_plot = values.astype(FLOAT)
+        except TypeError as e:
+            values_to_plot = values
+        if len(plot_data) >= plot_values_limit:
+            logger.info("Creating a histogram plot ...")
+            plot_output_path = tempdir_path / f"{column_name}.histogram.png"
+            plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
+            ax = values_to_plot.plot.hist(bins=min(20, len(values_to_plot)))
+            ax.set_xlabel(column_name)
+            ax.set_ylabel("Count")
+            plt.savefig(plot_output_path)
+            plt.close('all')  # Save memory
+            logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
+            histogram_plot_list.append(column_name)
+        if len(non_null_df) >= plot_values_limit:
+            logger.info("Creating box plots ...")
+            plot_output_path = tempdir_path / f"{column_name}.box.png"
+            fig, axs = plt.subplots(
+                nrows=2,
+                ncols=1,
+                figsize=(PLOT_SIZE_X, PLOT_SIZE_Y)
+            )
+            sns.boxplot(
+                ax=axs[0],
+                data=None,
+                x=values_to_plot,
+                showfliers=True,
+                orient="h"
+            )
+            axs[0].set_xlabel(f"'{column_name}' with outliers")
+            sns.boxplot(
+                ax=axs[1],
+                data=None,
+                x=values_to_plot,
+                showfliers=False,
+                orient="h"
+            )
+            axs[1].set_xlabel(f"'{column_name}' without outliers")
+            #plt.subplots_adjust(left=1, right=4, bottom=0.75, top=3, wspace=0.5, hspace=3)
+            plt.savefig(plot_output_path)
+            plt.close('all')  # Save memory
+            logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
+            box_plot_list.append(column_name)
         if len(plot_data) < plot_values_limit:
             logger.info("Creating pie plot ...")
             plot_output_path = tempdir_path / f"{column_name}.pie.png"

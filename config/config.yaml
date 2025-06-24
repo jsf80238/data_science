@@ -5,22 +5,22 @@ jdbc:
   port_number:
     mssql: 1433
     postgresql: 5432
-    snowflake: 443
+#    snowflake: 443
 
   class_name:
     mssql: com.microsoft.sqlserver.jdbc.SQLServerDriver
     postgresql: org.postgresql.Driver
-    snowflake: net.snowflake.client.jdbc.SnowflakeDriver
+#    snowflake: net.snowflake.client.jdbc.SnowflakeDriver
 
   jar:
     mssql: lib/jars/mssql-jdbc-12.4.2.jre11.jar
     postgresql: lib/jars/postgresql-42.7.0.jar
-    snowflake: lib/jars/snowflake-jdbc-3.19.0.jar
+#    snowflake: lib/jars/snowflake-jdbc-3.19.0.jar
 
   connection_string:
     mssql: jdbc:sqlserver://put_host_name_here:put_port_number_here;databaseName=put_database_name_here;trustServerCertificate=true
     postgresql: jdbc:postgresql://put_host_name_here:put_port_number_here/put_database_name_here
-    snowflake: jdbc:snowflake://put_host_name_here.snowflakecomputing.com/?authenticator=snowflake;db=put_database_name_here
+#    snowflake: jdbc:snowflake://put_host_name_here.snowflakecomputing.com/?authenticator=snowflake;db=put_database_name_here
 
 #datatype:
 #  mssql:

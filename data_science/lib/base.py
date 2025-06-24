@@ -1,5 +1,3 @@
-import sys
-from dataclasses import dataclass
 import enum
 from inspect import stack, getargvalues, currentframe, FrameInfo
 import logging
@@ -8,8 +6,7 @@ from pathlib import Path
 from random import choices
 import re
 from string import ascii_lowercase
-import tempfile
-import types
+import sys
 from typing import Union, Optional, Type, Tuple
 import unicodedata
 # Imports above are standard Python
@@ -30,6 +27,7 @@ if major < min_major or minor < min_minor:
     raise Exception(f"Your Python version needs to be at least {min_major}.{min_minor}.")
 
 old_factory = logging.getLogRecordFactory()
+
 
 class Config:
     PRIMARY_CONFIG_FILE = "config.yaml"
