@@ -1,5 +1,7 @@
 import sys
 from dataclasses import dataclass
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 import enum
 from inspect import stack, getargvalues, currentframe, FrameInfo
 import logging
@@ -16,6 +18,7 @@ import unicodedata
 # Imports below are 3rd-party
 from dotenv import dotenv_values
 import pendulum
+import polars as pl
 import jaydebeapi as jdbc
 import snowflake.connector  # Really hard to figure out jaydebeapi<-->Snowflake
 from yaml import load, dump
@@ -66,6 +69,9 @@ class C(enum.StrEnum):
     NUMBER = "NUMBER"
     PARQUET_EXTENSION = ".parquet"
     PORT_NUMBER = "port_number"
+    SNOWFLAKE_ACCOUNT = "lj26972.us-central1.gcp"
+    SNOWFLAKE_KEY_FILE = "/home/jason/snowflake_rsa_key.pem"
+    SNOWFLAKE_KEY_FILE_PASSWORD = "HolyCrossWild970!"
     SQL_EXTENSION = ".sql"
     VARCHAR = "VARCHAR"
 
@@ -149,12 +155,13 @@ class Database:
     __instance = None
 
     def __new__(cls,
-                host_name: str,
-                port_number: int,
-                database_name: str,
                 user_name: str,
-                password: str,
-                auto_commit: bool = False,
+                key_file_path: Path,
+                account: str,
+                warehouse: str = "compute_wh",
+                key_file_password: str = None,
+                password: str = None,
+                timezone: str = 'UTC',
                 **kwargs
                 ):
         """
@@ -162,40 +169,17 @@ class Database:
         """
         cls.logger = Logger().get_logger()
         if not cls.__instance:
-            if type(port_number) == str:
-                if not port_number.isdigit():
-                    raise Exception(f"Port number {port_number} is not valid.")
-                port_number = int(port_number)
-            cls.logger.info(f"Connecting to '{database_name} as {user_name}' ...")
-            # Determine database type based on port number
-            dbtype_dict = config_dict[C.JDBC][C.PORT_NUMBER]
-            for database_type_name, assigned_port in dbtype_dict.items():
-                if assigned_port == port_number:
-                    break
-            else:
-                raise Exception(f"I don't know what kind of database listens on port {port_number}.")
-            # Special treatment for Snowflake
-            if database_type_name == "snowflake":
-                cls.database_connection = snowflake.connector.connect(
-                    account=host_name,
-                    user=user_name,
-                    password=password,
-                    database=database_name,
-                    autocommit=auto_commit,
-                )
-            else:
-                classpath = Path(config_dict[C.JDBC][C.JAR][database_type_name])
-                absolute_classpath = Path(__file__).parent.parent / classpath
-                os.environ[C.CLASSPATH] = os.environ.get(C.CLASSPATH, "") + path_separator + classpath.as_posix()
-                connection_string = config_dict[C.JDBC][C.CONNECTION_STRING][database_type_name]
-                connection_string = connection_string.replace("put_host_name_here", host_name)
-                connection_string = connection_string.replace("put_port_number_here", str(port_number))
-                connection_string = connection_string.replace("put_database_name_here", database_name)
-                cls.database_connection = jdbc.connect(config_dict[C.JDBC][C.CLASS_NAME][database_type_name],
-                                          connection_string,
-                                          [user_name, password],
-                                          absolute_classpath.as_posix())
-                cls.database_connection.jconn.setAutoCommit(auto_commit)
+            cls.logger.info(f"Connecting to {account} as {user_name} ...")
+            conn_params = {
+                "account": account,
+                "user": user_name,
+                "password": password,
+                "authenticator": "SNOWFLAKE_JWT",
+                "private_key_file": key_file_path,
+                "private_key_file_pwd": key_file_password,
+                "timezone": timezone,
+            }
+            cls.database_connection = snowflake.connector.connect(**conn_params)
             cls.logger.info("... connected.")
             cls.__instance = object.__new__(cls)
         return cls.__instance
@@ -352,16 +336,24 @@ if __name__ == "__main__":
     }
     os.environ["JAVA_HOME"] = "C:/Program Files/Java/jdk-22"
     mydb = Database(
-        host_name=environment_settings_dict["HOST_NAME"],
-        port_number=environment_settings_dict["PORT_NUMBER"],
-        database_name=environment_settings_dict["DATABASE_NAME"],
-        user_name=environment_settings_dict["USER_NAME"],
-        password=environment_settings_dict["PASSWORD"],
+        user_name=environment_settings_dict["SNOWFLAKE_USER"],
+        account=environment_settings_dict["SNOWFLAKE_ACCOUNT"],
+        key_file_path=environment_settings_dict["SNOWFLAKE_PRIVATE_KEY_PATH"],
+        key_file_password=environment_settings_dict["SNOWFLAKE_PRIVATE_KEY_PASSWORD"],
+        # host_name=environment_settings_dict["HOST_NAME"],
+        # port_number=environment_settings_dict["PORT_NUMBER"],
+        # database_name=environment_settings_dict["DATABASE_NAME"],
+        # password=environment_settings_dict["PASSWORD"],
     )
-    print(mydb)
+    df = pl.read_database(
+        query="SELECT * FROM gold.finance_accounting.akademos_transaction_details sample(0.01)",
+        connection=mydb.get_connection(),
+        # schema_overrides={"normalised_score": pl.UInt8},
+    )
+    print(df)
     exit()
     query = """
-        SELECT * from my_table
+        SELECT * from gold.finance_accounting.sales_target
         """
     cursor, column_list = mydb.execute(query)
     for item in cursor.description:
@@ -372,4 +364,5 @@ if __name__ == "__main__":
             print()
             print(value)
             print(type(value))
+        break
     exit()

@@ -2,6 +2,7 @@ import argparse
 from collections import Counter, defaultdict
 import csv
 from datetime import datetime
+import pickle
 from pathlib import Path
 import os
 import random
@@ -15,20 +16,13 @@ import tempfile
 from argparse_range import range_action
 import dateutil.parser
 from dotenv import dotenv_values
-import openpyxl
-from openpyxl.styles import Border, Side, Alignment, Font, borders
 from matplotlib import pyplot as plt
-import numpy as np
-import pandas as pd
-import pyarrow.parquet as pq
+import polars as pl
 import seaborn as sns
-from pandas import Series
 
 # Imports below are custom
 from lib.base import C, Database, Logger, get_line_count
 
-# Excel limitation
-MAX_SHEET_NAME_LENGTH = 31
 # Excel output
 ROUNDING = 1  # 5.4% for example
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -55,11 +49,8 @@ PLOT_FONT_SCALE = 0.75
 HISTOGRAM, BOX, PIE = "histogram", "box", "pie"
 # Good character for spreadsheet-embedded histograms U+25A0
 BLACK_SQUARE = "■"
-# Output can be to Excel or HTML
-EXCEL = "EXCEL"
-HTML = "HTML"
 OPEN, CLOSE = "{", "}"
-FILE_BASE_NAME = "profiled_data"
+DEFAULT_FILE_BASE_NAME = "profiled_data"
 
 DATATYPE_MAPPING_DICT = {
     "BIGINT": NUMBER,
@@ -92,25 +83,6 @@ DATATYPE_MAPPING_DICT = {
     "SQLXML": STRING,
     "TIME": STRING,
     "VARCHAR": STRING,
-
-    # See https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#label-python-connector-type-codes
-    "0": NUMBER,
-    "1": NUMBER,
-    "2": STRING,
-    "3": DATETIME,
-    "4": DATETIME,
-    "5": STRING,
-    "6": DATETIME,
-    "7": DATETIME,
-    "8": DATETIME,
-    "9": STRING,
-    "10": None,
-    "11": None,
-    "12": STRING,
-    "13": NUMBER,
-    "14": None,
-    "15": None,
-    "16": None,
 }
 
 ROW_COUNT = "count"
@@ -174,11 +146,11 @@ def format_long_string(s: str, cutoff: int) -> str:
     return prefix + placeholder + suffix
 
 
-def convert_datatype(name: np.dtypes) -> str:
+def convert_datatype(name: pl.dtypes) -> str:
     """
     Convert Pandas datatypes to a more generic type
 
-    :param value: the Pandas name
+    :param name: the Pandas name
     :return: one of: NUMBER, DATETIME, STRING
     """
     name = str(name)
@@ -202,22 +174,6 @@ def convert_str_to_float(value: str) -> float:
         return float(value)
     else:
         return None
-
-
-def make_sheet_name(s: str, max_length: int, filler: str = "...") -> str:
-    """
-    For example, make_sheet_name("Hello world!", 7) returns:
-    "Hell..."
-    """
-    # Remove []:*?/\ as these are not valid for sheet names
-    illegal_chars = "[]:*?/\\"
-    translation_map = str.maketrans(illegal_chars, "_"*len(illegal_chars))
-    s = s.translate(translation_map)
-    excess_count = len(s) - max_length
-    if excess_count <= 0:
-        return s
-    else:
-        return s[:max_length - len(filler)] + filler
 
 
 def get_pattern(l: list) -> dict:
@@ -320,30 +276,14 @@ def is_data_file(input_argument: str) -> bool:
     return False
 
 
-def insert_image(image_type: str, sheet_number: int) -> None:
-    """
-    Add a image/plot to a new sheet
-    :image_type: HISTOGRAM, BOX, or PIE
-    :sheet_number: where the image should be added
-    """
-    target_sheet_name = make_sheet_name(column_name, MAX_SHEET_NAME_LENGTH - 4) + " " + image_type[:3]
-    workbook.create_sheet(target_sheet_name, sheet_number)
-    worksheet = workbook.worksheets[sheet_number]
-    image_path = tempdir_path / (f"{column_name}.{image_type}.png")
-    logger.info(f"Adding {image_path} to {output_file} as sheet '{target_sheet_name}' ...")
-    image = openpyxl.drawing.image.Image(image_path)
-    image.anchor = "A1"
-    worksheet.add_image(image)
-
-
-def assign_best_datatype(s: Series) -> str:
+def assign_best_datatype(s: pl.Series) -> str:
     """
     Pandas will automatically attempt to convert data to datetime where possible
     It does so poorly, in my experience, so will also try "manually"
     For example, https://www.kaggle.com/datasets/philipagbavordoe/car-prices
     """
     # Sample up to DATATYPE_SAMPLING_SIZE non-null values
-    a_sample = s.sample(min(object_sampling_limit, s.size))
+    a_sample = s.sample(min(object_sampling_limit, len(s)))
     failure_count = 0
     for item in list(a_sample):
         try:
@@ -353,7 +293,7 @@ def assign_best_datatype(s: Series) -> str:
     failure_ratio = failure_count / a_sample.size
     if failure_ratio <= object_conversion_allowed_error_rate:
         logger.info(f"Casting column '{column_name}' as a datetime ...")
-        s = pd.to_datetime(s.apply(safe_convert_str_to_datetime))
+        s = pl.to_datetime(s.apply(convert_str_to_datetime))
         return DATETIME, s
     else:
         logger.info(
@@ -367,7 +307,7 @@ def assign_best_datatype(s: Series) -> str:
         failure_ratio = failure_count / a_sample.size
         if failure_ratio <= object_conversion_allowed_error_rate:
             logger.info(f"Casting column '{column_name}' as numeric ...")
-            s = pd.to_numeric(s, errors="coerce")
+            s = pl.to_numeric(s, errors="coerce")
             return NUMBER, s
         else:
             logger.info(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
@@ -375,28 +315,16 @@ def assign_best_datatype(s: Series) -> str:
     return STRING, s
 
 
-def convert_str_to_datetime(value: str) -> pd.Timestamp:
+def convert_str_to_datetime(value: str) -> pl.Timestamp:
     """
     Pandas uses dateutils to parse dates. And whereas Python supports dates from year 0000 to 9999, Pandas does not.
     :param value: the string which might be a datetime
     :return: the value as a naive datetime (openpyxl does not support timezones)
     """
-    nominal_result = pd.to_datetime(value).replace(tzinfo=None)
-    if nominal_result > pd.Timestamp.max:
-        return pd.Timestamp.max
-    return max(pd.Timestamp.min, nominal_result)
-
-
-def safe_convert_str_to_datetime(value: str) -> pd.Timestamp:
-    """
-    This is a wrapper around convert_str_to_datetime which swallows exceptions when used with Pandas' apply function
-    :param value: the string which might be a datetime
-    :return: the value as a naive datetime (openpyxl does not support timezones), or None if it cannot be parsed
-    """
-    try:
-        return convert_str_to_datetime(value)
-    except:
-        return None
+    nominal_result = pl.to_datetime(value).replace(tzinfo=None)
+    if nominal_result > pl.Timestamp.max:
+        return pl.Timestamp.max
+    return max(pl.Timestamp.min, nominal_result)
 
 
 if __name__ == "__main__":
@@ -439,13 +367,27 @@ if __name__ == "__main__":
                         action=range_action(1, sys.maxsize),
                         default=DEFAULT_PLOT_VALUES_LIMIT,
                         help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {DEFAULT_PLOT_VALUES_LIMIT}.")
+    parser.add_argument('--no-pattern',
+                        action='store_true',
+                        help=f"Don't identify patterns in text columns.")
+    parser.add_argument('--no-histogram',
+                        action='store_true',
+                        help=f"Don't make histograms.")
+    parser.add_argument('--no-box',
+                        action='store_true',
+                        help=f"Don't make box plots.")
+    parser.add_argument('--no-pie',
+                        action='store_true',
+                        help=f"Don't make pie charts.")
+    parser.add_argument('--no-visual',
+                        action='store_true',
+                        help=f"Don't make histograms or box plots or pie charts.")
     parser.add_argument('--max-longest-string',
                         type=int,
                         metavar="NUM",
                         action=range_action(50, sys.maxsize),
                         default=DEFAULT_LONGEST_LONGEST,
                         help=f"When displaying long strings show a summary if string exceeds this length, default is {DEFAULT_LONGEST_LONGEST}.")
-
     parser.add_argument('--object-sampling-limit',
                         metavar="NUM",
                         action=range_action(1, sys.maxsize),
@@ -460,12 +402,10 @@ if __name__ == "__main__":
                         metavar="/path/to/dir",
                         default=Path.cwd(),
                         help="Default is the current directory. Will make intermediate directories as necessary.")
-    parser.add_argument('--html',
-                        action='store_true',
-                        help="Also produce a zip file containing the results in HTML format.")
-    parser.add_argument('--get-cleaned-version',
-                        metavar="FILE_NAME",
-                        help=f"Output the Pandas data frame in CSV or Parquet format. Might be useful if string columns were converted to datetimes/numerics. File name must end in '{C.CSV_EXTENSION}' or '{C.PARQUET_EXTENSION}'.")
+    parser.add_argument('--output-file-name',
+                        metavar="NAME",
+                        default=DEFAULT_FILE_BASE_NAME,
+                        help=f"Default is, in order: input file name, table name from query if it can be determined, '{DEFAULT_FILE_BASE_NAME}'.")
     parser.add_argument('--db-host-name',
                         metavar="HOST_NAME",
                         help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
@@ -515,9 +455,12 @@ if __name__ == "__main__":
     object_sampling_limit = args.object_sampling_limit
     object_conversion_allowed_error_rate = args.object_conversion_allowed_error_rate / 100
     cleaned_version_output_file = args.get_cleaned_version
-    is_html_output = args.html
-    is_excel_output = True
+    is_pattern = not args.no_pattern
+    is_histogram = not args.no_histogram and not args.no_visual
+    is_box = not args.no_box and not args.no_visual
+    is_pie = not args.no_pie and not args.no_visual
     target_dir = Path(args.target_dir)
+    output_file_name = args.output_file_name
 
     environment_settings_dict = {
         **os.environ,
@@ -528,32 +471,9 @@ if __name__ == "__main__":
     else:
         os.makedirs(target_dir, exist_ok=True)
 
-    if input_query:
-        # Verify we have the information we need to connect to the database
-        host_name = host_name or environment_settings_dict.get("HOST_NAME")
-        if not host_name:
-            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-host-name.")
-        port_number = port_number or environment_settings_dict.get("PORT_NUMBER")
-        if not port_number:
-            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-port-number.")
-        database_name = database_name or environment_settings_dict.get("DATABASE_NAME")
-        if not database_name:
-            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-database-name.")
-        user_name = user_name or environment_settings_dict.get("USER_NAME")
-        if not user_name:
-            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-user-name.")
-        password = password or environment_settings_dict.get("PASSWORD")
-        if not password:
-            parser.error("Connecting to a database requires environment variable and/or environment file and/or --db-password.")
-    elif input_path:
-        if not input_path.exists():
-            parser.error(f"Could not find input file '{input_path}'.")
-    else:
-        raise Exception("Programming error.")
+    if input_path and not input_path.exists():
+        parser.error(f"Could not find input file '{input_path}'.")
 
-    if cleaned_version_output_file:
-        if not (cleaned_version_output_file.lower().endswith(C.CSV_EXTENSION) or cleaned_version_output_file.lower().endswith(C.PARQUET_EXTENSION)):
-            parser.error(f"Cleaned version output file name, if provided, must end with '{C.CSV_EXTENSION}' or '{C.PARQUET_EXTENSION}'.")
     if args.verbose:
         logger = Logger("DEBUG").get_logger()
     elif args.terse:
@@ -562,11 +482,17 @@ if __name__ == "__main__":
         logger = Logger().get_logger()
 
 
-    # Verify we have permission to write to the output file
-    if is_excel_output:
-        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
-        if output_file.exists():
-            os.remove(output_file)
+    # Determine output file name if not provided on command line
+    if output_file_name == DEFAULT_FILE_BASE_NAME:
+        if input_path:
+            # Data is from a file
+            output_file_name = input_path.stem
+        else:
+            # Data is from a query
+            pattern = re.compile(r"select\s+.+from\s+([\w\.]+)", re.IGNORECASE | re.DOTALL)
+            if match := pattern.search(input_query):
+                output_file_name = match.group(1).lower()
+
     # Now, read the data
     input_df = None
     data_dict = defaultdict(list)
@@ -576,50 +502,25 @@ if __name__ == "__main__":
     if input_query:
         # Data is coming from a database query
         mydb = Database(
-            host_name=host_name,
-            port_number=port_number,
-            database_name=database_name,
-            user_name=user_name,
-            password=password
+            user_name=environment_settings_dict["SNOWFLAKE_USER"],
+            account=environment_settings_dict["SNOWFLAKE_ACCOUNT"],
+            key_file_path=environment_settings_dict["SNOWFLAKE_PRIVATE_KEY_PATH"],
+            key_file_password=environment_settings_dict["SNOWFLAKE_PRIVATE_KEY_PASSWORD"],
         )
-        cursor, column_list = mydb.execute(input_query)
-        for r in cursor.fetchall():
-            row = dict(zip(column_list, r))
-            # Store data
-            for column_name, value in row.items():
-                data_dict[column_name].append(value)
-        # Determine datatype
-        logger.info("Data read.")
-        for item in cursor.description:
-            column_name, dbapi_type_code, display_size, internal_size, precision, scale, null_ok = item
-            type_code_desc = str(dbapi_type_code).upper()
-            # ↑ Converts things like DBAPITypeObject('BOOLEAN', 'BIGINT', 'BIT', 'INTEGER', 'SMALLINT', 'TINYINT') to
-            # "DBAPITypeObject('BOOLEAN', 'BIGINT', 'BIT', 'INTEGER', 'SMALLINT', 'TINYINT')", which is good enough
-            # to determine the datatype.
-            for key in DATATYPE_MAPPING_DICT:
-                if key in type_code_desc:
-                    datatype_dict[column_name] = DATATYPE_MAPPING_DICT[key]
-                    logger.info(f"Read column '{column_name}' as {DATATYPE_MAPPING_DICT[key]}.")
-                    break
-            else:
-                logger.error(f"Could not determine data type for column '{column_name}' based on the JDBC metadata: {str(item)}")
-                datatype_dict[column_name] = STRING
-        # Sometimes the JDBC API returns strings for values its metadata says are dates/datetimes.
-        # Convert these as necessary from Python strings to Python datetimes
-        for column_name, values in data_dict.items():
-            if datatype_dict[column_name] == DATETIME:
-                # Check the type of the first non-null value
-                if isinstance(data_dict[column_name][0], str):
-                    data_dict[column_name] = list(map(lambda x: dateutil.parser.parse(x), data_dict[column_name]))
-        input_df = pd.DataFrame.from_dict(data_dict)
+        df = pl.read_database(
+            query="SELECT * FROM gold.finance_accounting.akademos_transaction_details sample(0.01)",
+            connection=mydb.get_connection(),
+            # schema_overrides={"normalised_score": pl.UInt8},
+        )
+        logger.info(f"Data read: {len(df):,} rows.")
 
     elif input_path:
         # Data is coming from a file
         logger.info(f"Reading from '{input_path}' ...")
         if input_path.name.endswith(C.PARQUET_EXTENSION.value):
-            input_df = pq.read_table(input_path).to_pandas()
+            input_df = pl.read_table(input_path).to_pandas()
         else:
-            input_df = pd.read_csv(input_path, delimiter=delimiter, header=header_lines)
+            input_df = pl.read_csv(input_path, delimiter=delimiter, header=header_lines)
         # Sampling requested?
         if sample_rows:
             input_df = input_df.sample(sample_rows)
@@ -639,6 +540,7 @@ if __name__ == "__main__":
         s = input_df[~mask][column_name]
         if not s.size:
             # Column empty, we don't care about the type
+            logger.info(f"Column {column_name} is empty.")
             continue
         # Sample up to DATATYPE_SAMPLING_SIZE non-null values
         a_sample = s.sample(min(object_sampling_limit, s.size))
@@ -651,7 +553,7 @@ if __name__ == "__main__":
         failure_ratio = failure_count / a_sample.size
         if failure_ratio <= object_conversion_allowed_error_rate:
             logger.info(f"Casting column '{column_name}' as a datetime ...")
-            input_df[column_name] = pd.to_datetime(s.apply(safe_convert_str_to_datetime))
+            input_df[column_name] = pl.to_datetime(s.apply(safe_convert_str_to_datetime))
             datatype_dict[column_name] = DATETIME
         else:
             logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
@@ -664,7 +566,7 @@ if __name__ == "__main__":
             failure_ratio = failure_count / a_sample.size
             if failure_ratio <= object_conversion_allowed_error_rate:
                 logger.info(f"Casting column '{column_name}' as numeric ...")
-                input_df[column_name] = pd.to_numeric(s, errors="coerce")
+                input_df[column_name] = pl.to_numeric(s, errors="coerce")
                 datatype_dict[column_name] = NUMBER
             else:
                 logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
@@ -711,7 +613,6 @@ if __name__ == "__main__":
         datatype = datatype_dict[column_name]
 
         if null_count != row_count:
-
             temp = "temp"
             if datatype == STRING:
                 # Largest & smallest
@@ -777,7 +678,7 @@ if __name__ == "__main__":
             most_common, most_common_count = most_common_list[0]
             column_dict[MOST_COMMON] = most_common
             column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
-            detail_df = pd.DataFrame()
+            detail_df = pl.DataFrame()
             # Create 3-column descending visual
             detail_df["rank"] = list(range(1, len(most_common_list) + 1))
             detail_df["value"] = [x[0] for x in most_common_list]
@@ -785,18 +686,16 @@ if __name__ == "__main__":
             detail_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list]
             detail_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list]
             detail_dict[column_name] = detail_df
-        else:
-            logger.warning(f"Column '{column_name}' is empty.")
 
         # Produce visuals
-        values = pd.Series(values)
+        values = pl.Series(values)
         plot_data = values.value_counts(normalize=True)
         # Produce a pattern analysis for strings
-        if datatype == STRING and row_count:
+        if is_pattern and datatype == STRING and row_count:
             pattern_counter = get_pattern(non_null_df[column_name])
             max_length = min(max_detail_values, len(non_null_df))
             most_common_pattern_list = pattern_counter.most_common(max_length)
-            pattern_df = pd.DataFrame()
+            pattern_df = pl.DataFrame()
             # Create 3-column descending visual
             pattern_df["rank"] = list(range(1, len(most_common_pattern_list) + 1))
             pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
@@ -809,7 +708,7 @@ if __name__ == "__main__":
                 values_to_plot = values.astype(FLOAT)
             except TypeError as e:
                 values_to_plot = values
-            if len(plot_data) >= plot_values_limit:
+            if is_histogram and len(plot_data) >= plot_values_limit:
                 logger.info("Creating a histogram plot ...")
                 plot_output_path = tempdir_path / f"{column_name}.histogram.png"
                 plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
@@ -820,7 +719,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 histogram_plot_list.append(column_name)
-            if len(non_null_df) >= plot_values_limit:
+            if is_box and len(non_null_df) >= plot_values_limit:
                 logger.info("Creating box plots ...")
                 plot_output_path = tempdir_path / f"{column_name}.box.png"
                 fig, axs = plt.subplots(
@@ -849,7 +748,7 @@ if __name__ == "__main__":
                 plt.close('all')  # Save memory
                 logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
                 box_plot_list.append(column_name)
-        if len(plot_data) < plot_values_limit:
+        if is_pie and len(plot_data) < plot_values_limit:
             logger.info("Creating pie plot ...")
             plot_output_path = tempdir_path / f"{column_name}.pie.png"
             s = values.value_counts()
@@ -862,13 +761,13 @@ if __name__ == "__main__":
             pie_plot_list.append(column_name)
 
     # Convert the summary_dict dictionary of dictionaries to a DataFrame
-    result_df = pd.DataFrame.from_dict(summary_dict, orient='index')
+    result_df = pl.DataFrame.from_dict(summary_dict, orient='index')
 
     # Output
     if is_excel_output:
         logger.info("Writing summary ...")
-        output_file = (target_dir / f"{FILE_BASE_NAME}{C.EXCEL_EXTENSION}")
-        writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
+        output_file = (target_dir / f"{output_file_name}{C.EXCEL_EXTENSION}")
+        writer = pl.ExcelWriter(output_file, engine='xlsxwriter')
         result_df.to_excel(writer, sheet_name="Summary")
         # And generate a detail sheet, and optionally a pattern sheet and diagrams, for each column
         for column_name, detail_df in detail_dict.items():
@@ -925,7 +824,7 @@ if __name__ == "__main__":
 
 
     if is_html_output:
-        root_output_dir = tempdir_path / FILE_BASE_NAME
+        root_output_dir = tempdir_path / output_file_name
         columns_dir = root_output_dir / "columns"
         images_dir = root_output_dir / "images"
         os.makedirs(columns_dir)
@@ -968,7 +867,7 @@ if __name__ == "__main__":
                     writer.write(f"<h3>Box plots</h3>")
                     writer.write(f'<img src="../images/{column_name}.box.png" alt="Box plots for column :{column_name}:">')
                 writer.write(make_html_footer())
-        with open(root_output_dir / f"{FILE_BASE_NAME}.html", "w") as writer:
+        with open(root_output_dir / f"{output_file_name}.html", "w") as writer:
             logger.info("Writing summary ...")
             writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
             # Replace column names in summary dataframe with URL links
@@ -979,7 +878,7 @@ if __name__ == "__main__":
             writer.write(make_html_footer())
         logger.info("Making zip archive ...")
         output_file = shutil.make_archive(
-            base_name=target_dir / FILE_BASE_NAME,
+            base_name=target_dir / output_file_name,
             format="zip",
             root_dir=tempdir_path,
             base_dir=".",
