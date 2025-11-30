@@ -33,7 +33,7 @@ class C(enum.Enum):
     # Headings for Excel output
     VALUE, COUNT = "Value", "Count"
     # Datatypes
-    NUMBER, DATETIME, STRING = "C.NUMBER.value", "DATETIME", "C.STRING.value"
+    NUMBER, DATETIME, STRING = "NUMBER", "DATETIME", "STRING"
     # When producing a list of detail values and their frequency of occurrence
     DEFAULT_MAX_DETAIL_VALUES = 35
     # When analyzing the patterns of a string column
@@ -140,7 +140,7 @@ def convert_seconds(seconds: float) -> str:
     return f"{day}:{hour:02}:{min:02}:{sec:02}"
 
 
-def get_datatype(v, dialect: str = "Snowflake") -> str:
+def get_datatype(v: pl.Series, dialect: str = "Snowflake") -> str:
     """
     | Return one of: C.STRING.value, C.NUMBER.value, C.DATETIME.value
     |
@@ -151,25 +151,21 @@ def get_datatype(v, dialect: str = "Snowflake") -> str:
     | 2025-11-29 -> C.DATETIME.value
     | 2025-11-29 22:56:54.060000+00:00 -> C.DATETIME.value
 
-    :param v: the value we are trying to type
+    :param v: the column we are trying to type
     :param dialect: the database type, in case it matters
     :return: the type
     """
-    if isinstance(v, str):
-        return C.STRING.value
-    elif isinstance(v, int):
+    if v.dtype in (
+        pl.Decimal, pl.Float32, pl.Float64, pl.Int128, pl.Int16, pl.Int32, pl.Int64, pl.Int8, pl.UInt16, pl.UInt32, pl.UInt64, pl.UInt8,
+    ):
         return C.NUMBER.value
-    elif isinstance(v, float):
-        return C.NUMBER.value
-    elif isinstance(v, Decimal):
-        return C.NUMBER.value
-    elif isinstance(v, date):
-        return C.DATETIME.value
-    elif isinstance(v, datetime):
+    elif v.dtype in (
+        pl.Date, pl.Datetime, pl.Duration, pl.Time,
+    ):
         return C.DATETIME.value
     else:
-        logger.warning(f"Categorizing this value as a string: {v}")
         return C.STRING.value
+
 
 def get_pattern(l: list) -> dict:
     """
@@ -538,13 +534,12 @@ pattern_dict = dict()  # For each string column calculate the frequency of patte
 # for column_name, datatype in dict(input_df.dtypes).items():
 for column_name in input_df.columns:
     values = input_df[column_name]
-    if True and not column_name.upper().startswith("BOOKED_AT"):  # For testing
+    if False and not column_name.upper().startswith("IS_EQUITABLE_ACCESS"):  # For testing
         continue
     # A list of non-null values are useful for some calculations below
     non_null_series = input_df[column_name].drop_nulls().drop_nans()
     try:
-        a = non_null_series[0]
-        datatype = get_datatype(a)
+        datatype = get_datatype(non_null_series)
         logger.info(f"Working on column '{column_name}' ({datatype}) ...")
     except IndexError:
         logger.warning(f"Skipping column '{column_name}' because it is empty.")
@@ -571,6 +566,8 @@ for column_name in input_df.columns:
         column_dict[C.LARGEST] = max(non_null_series.to_list())
         column_dict[C.SMALLEST] = min(non_null_series.to_list())
         if datatype == C.STRING.value:
+            # This may not be a Polars string, but we are treating it as such
+            non_null_series = non_null_series.cast(pl.String)
             # Longest & shortest
             min_len = min(non_null_series.str.len_chars())
             candidates = non_null_series.filter(non_null_series.str.len_chars() == min_len)
@@ -642,7 +639,7 @@ for column_name in input_df.columns:
     plot_data = non_null_series.value_counts(normalize=True)
     # Produce a pattern analysis for strings
     if is_pattern and datatype == C.STRING.value and row_count:
-        pattern_counter = get_pattern(non_null_series[column_name].to_list())
+        pattern_counter = get_pattern(non_null_series.to_list())
         max_length = min(max_detail_values, len(non_null_series))
         most_common_pattern_list = pattern_counter.most_common(max_length)
         pattern_df = pl.DataFrame()
@@ -667,29 +664,44 @@ for column_name in input_df.columns:
         if is_histogram and len(plot_data) >= plot_values_limit:
             logger.info("Creating a histogram plot ...")
             plot_output_path = tempdir_path / f"{column_name}.histogram.png"
-            maxbins = min(20, len(non_null_series))
+            num_bins = min(20, len(non_null_series))
             scale = alt.Scale()  # Can customize later
-            # Altair can plot Datetimes, but only if they are naive
             if datatype == C.DATETIME.value:
+                # Altair can plot Datetimes, but only if they are naive
                 s_naive = (
                     non_null_series
                     .dt.convert_time_zone("UTC")  # ensure everything is UTC
                     .dt.replace_time_zone(None)  # drop tz info (now naive)
                 )
                 plot_data_df = s_naive.to_frame().to_pandas()
-                encoding = "T"  # temporal
-                axis = alt.Axis(format="%Y-%m-%d")
-            else:
+                chart = (
+                    alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value/2, height=C.PLOT_SIZE_Y.value/2)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            f"{column_name}:T",
+                            bin=alt.Bin(maxbins=num_bins),
+                            title=column_name,
+                            axis=alt.Axis(format="%Y-%m-%d", labelAngle=45)
+                        ),
+                        y=alt.Y("count()", title="count"),
+                    )
+                )
+            else:  # Numeric
                 plot_data_df = non_null_series.to_frame().to_pandas()
-                encoding = "Q"  # quantitative
-            chart = alt.Chart(
-                plot_data_df,
-                width=C.PLOT_SIZE_X.value/2,
-                height=C.PLOT_SIZE_Y.value/2,
-                ).mark_bar().encode(
-                x=alt.X(f"{column_name}:{encoding}", bin=alt.Bin(maxbins=maxbins), title=column_name),
-                y=alt.Y("count()", title="count")
-            )
+                chart = (
+                    alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value/2, height=C.PLOT_SIZE_Y.value/2)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            f"{column_name}:Q",
+                            bin=alt.Bin(maxbins=num_bins),
+                            title=column_name,
+                            axis=alt.Axis(labelAngle=45)
+                        ),
+                        y=alt.Y("count()", title="count"),
+                    )
+                )
             chart.save(plot_output_path)
             # ax = non_null_series.to_list().plot.hist(bins=min(20, len(non_null_series)))
             # ax.set_xlabel(column_name)
@@ -698,7 +710,7 @@ for column_name in input_df.columns:
             # plt.close('all')  # Save memory
             logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
             histogram_plot_list.append(column_name)
-        if is_box and len(non_null_series) >= plot_values_limit:
+        if False and is_box and len(non_null_series) >= plot_values_limit:
             logger.info("Creating box plots ...")
             plot_output_path = tempdir_path / f"{column_name}.box.png"
             fig, axs = plt.subplots(
@@ -727,7 +739,7 @@ for column_name in input_df.columns:
             plt.close('all')  # Save memory
             logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
             box_plot_list.append(column_name)
-    if is_pie and len(plot_data) < plot_values_limit:
+    if False and is_pie and len(plot_data) < plot_values_limit:
         logger.info("Creating pie plot ...")
         plot_output_path = tempdir_path / f"{column_name}.pie.png"
         s = values.value_counts()
