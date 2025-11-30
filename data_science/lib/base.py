@@ -351,9 +351,13 @@ if __name__ == "__main__":
         # schema_overrides={"normalised_score": pl.UInt8},
     )
     print(df)
-    exit()
     query = """
-        SELECT * from gold.finance_accounting.sales_target
+        SELECT
+        'hello' as col1,
+        1 as col2,
+        1.1 as col3,
+        current_date() as col4,
+        current_timestamp() as col5
         """
     cursor, column_list = mydb.execute(query)
     for item in cursor.description:
