@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 import csv
 from datetime import date, datetime
 from decimal import Decimal
+import enum
 import pickle
 from pathlib import Path
 import os
@@ -14,6 +15,7 @@ import sys
 import tempfile
 # Imports above are standard Python
 # Imports below are 3rd-party
+import altair as alt
 from argparse_range import range_action
 import dateutil.parser
 from dotenv import dotenv_values
@@ -22,106 +24,70 @@ import polars as pl
 import seaborn as sns
 
 # Imports below are custom
-from lib.base import C, Database, Logger, get_line_count
+from lib.base import C as BASE_CONSTANTS
+from lib.base import Database, Logger, get_line_count
 
-# Excel output
-ROUNDING = 1  # 5.4% for example
-DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
-# Headings for Excel output
-VALUE, COUNT = "Value", "Count"
-# Datatypes
-NUMBER, DATETIME, STRING = "NUMBER", "DATETIME", "STRING"
-# When producing a list of detail values and their frequency of occurrence
-DEFAULT_MAX_DETAIL_VALUES = 35
-DETAIL_ABBR = " det"
-# When analyzing the patterns of a string column
-DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
-DEFAULT_MAX_PATTERN_LENGTH = 50
-PATTERN_ABBR = " pat"
-# Don't plot histograms/boxes if there are fewer than this number of distinct values
-# And don't make pie charts if there are more than this number of distinct values
-DEFAULT_PLOT_VALUES_LIMIT = 8
-# When determining whether a string column could be considered datetime or numeric examine (up to) this number of records
-DEFAULT_OBJECT_SAMPLING_COUNT = 500
-DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE = 5  # %
-# Plotting visual effects
-PLOT_SIZE_X, PLOT_SIZE_Y = 11, 8.5
-PLOT_FONT_SCALE = 0.75
-HISTOGRAM, BOX, PIE = "histogram", "box", "pie"
-# Good character for spreadsheet-embedded histograms U+25A0
-BLACK_SQUARE = "■"
-OPEN, CLOSE = "{", "}"
-DEFAULT_FILE_BASE_NAME = "profiled_data"
+class C(enum.Enum):
+    ROUNDING = 1  # 5.4% for example
+    DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+    # Headings for Excel output
+    VALUE, COUNT = "Value", "Count"
+    # Datatypes
+    NUMBER, DATETIME, STRING = "C.NUMBER.value", "DATETIME", "C.STRING.value"
+    # When producing a list of detail values and their frequency of occurrence
+    DEFAULT_MAX_DETAIL_VALUES = 35
+    # When analyzing the patterns of a string column
+    DEFAULT_LONGEST_LONGEST = 50  # Don't display more than this
+    DEFAULT_MAX_PATTERN_LENGTH = 50
+    # Don't plot histograms/boxes if there are fewer than this number of distinct values
+    # And don't make pie charts if there are more than this number of distinct values
+    DEFAULT_PLOT_VALUES_LIMIT = 8
+    # When determining whether a string column could be considered datetime or numeric examine (up to) this number of records
+    DEFAULT_OBJECT_SAMPLING_COUNT = 500
+    DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE = 5  # %
+    # Plotting visual effects
+    PLOT_SIZE_X, PLOT_SIZE_Y = 11*72, 8.5*72
+    PLOT_FONT_SCALE = 0.75
+    HISTOGRAM, BOX, PIE = "histogram", "box", "pie"
+    # Good character for spreadsheet-embedded histograms U+25A0
+    BLACK_SQUARE = "■"
+    DEFAULT_FILE_BASE_NAME = "profiled_data"
+    ROW_COUNT = "count"
+    NULL_COUNT = "null"
+    NULL_PERCENT = "%null"
+    UNIQUE_COUNT = "unique"
+    UNIQUE_PERCENT = "%unique"
+    MOST_COMMON = "most_common"
+    MOST_COMMON_PERCENT = "%most_common"
+    LARGEST = "largest"
+    SMALLEST = "smallest"
+    LONGEST = "longest"
+    SHORTEST = "shortest"
+    MEAN = "mean"
+    PERCENTILE_25TH = "percentile_25th"
+    MEDIAN = "median"
+    PERCENTILE_75TH = "percentile_75th"
+    STDDEV = "stddev"
+    FLOAT = "float"
 
-DATATYPE_MAPPING_DICT = {
-    "BIGINT": NUMBER,
-    "BINARY": NUMBER,
-    "BIT": NUMBER,
-    "BOOLEAN": NUMBER,
-    "DECIMAL": NUMBER,
-    "DOUBLE": NUMBER,
-    "FLOAT": NUMBER,
-    "INTEGER": NUMBER,
-    "NUMERIC": NUMBER,
-    "REAL": NUMBER,
-    "SMALLINT": NUMBER,
-    "TINYINT": NUMBER,
-    "VARBINARY": NUMBER,
-
-    "DATE": DATETIME,
-    "TIMESTAMP": DATETIME,
-
-    "BLOB": STRING,
-    "CHAR": STRING,
-    "CLOB": STRING,
-    "LONGNVARCHAR": STRING,
-    "LONGVARBINARY": STRING,
-    "LONGVARCHAR": STRING,
-    "NCHAR": STRING,
-    "NCLOB": STRING,
-    "NVARCHAR": STRING,
-    "OTHER": STRING,
-    "SQLXML": STRING,
-    "TIME": STRING,
-    "VARCHAR": STRING,
-}
-
-ROW_COUNT = "count"
-NULL_COUNT = "null"
-NULL_PERCENT = "%null"
-UNIQUE_COUNT = "unique"
-UNIQUE_PERCENT = "%unique"
-MOST_COMMON = "most_common"
-MOST_COMMON_PERCENT = "%most_common"
-LARGEST = "largest"
-SMALLEST = "smallest"
-LONGEST = "longest"
-SHORTEST = "shortest"
-MEAN = "mean"
-PERCENTILE_25TH = "percentile_25th"
-MEDIAN = "median"
-PERCENTILE_75TH = "percentile_75th"
-STDDEV = "stddev"
-FLOAT = "float"
-
-ANALYSIS_LIST = (
-    ROW_COUNT,
-    NULL_COUNT,
-    NULL_PERCENT,
-    UNIQUE_COUNT,
-    UNIQUE_PERCENT,
-    MOST_COMMON,
-    MOST_COMMON_PERCENT,
-    LARGEST,
-    SMALLEST,
-    LONGEST,
-    SHORTEST,
-    MEAN,
-    PERCENTILE_25TH,
-    MEDIAN,
-    PERCENTILE_75TH,
-    STDDEV,
-)
+    ANALYSIS_LIST = (
+        ROW_COUNT,
+        NULL_COUNT,
+        NULL_PERCENT,
+        UNIQUE_COUNT,
+        UNIQUE_PERCENT,
+        MOST_COMMON,
+        MOST_COMMON_PERCENT,
+        LARGEST,
+        SMALLEST,
+        LONGEST,
+        SHORTEST,
+        MEAN,
+        PERCENTILE_25TH,
+        MEDIAN,
+        PERCENTILE_75TH,
+        STDDEV,
+    )
 
 
 def format_long_string(s: str, cutoff: int) -> str:
@@ -176,34 +142,34 @@ def convert_seconds(seconds: float) -> str:
 
 def get_datatype(v, dialect: str = "Snowflake") -> str:
     """
-    | Return one of: STRING, NUMBER, DATETIME
+    | Return one of: C.STRING.value, C.NUMBER.value, C.DATETIME.value
     |
     | Examples:
-    | "hi joe." --> STRING
-    | 0 --> NUMBER
-    | 1.1 --> NUMBER
-    | 2025-11-29 -> DATETIME
-    | 2025-11-29 22:56:54.060000+00:00 -> DATETIME
+    | "hi joe." --> C.STRING.value
+    | 0 --> C.NUMBER.value
+    | 1.1 --> C.NUMBER.value
+    | 2025-11-29 -> C.DATETIME.value
+    | 2025-11-29 22:56:54.060000+00:00 -> C.DATETIME.value
 
     :param v: the value we are trying to type
     :param dialect: the database type, in case it matters
     :return: the type
     """
     if isinstance(v, str):
-        return STRING
+        return C.STRING.value
     elif isinstance(v, int):
-        return NUMBER
+        return C.NUMBER.value
     elif isinstance(v, float):
-        return NUMBER
+        return C.NUMBER.value
     elif isinstance(v, Decimal):
-        return NUMBER
+        return C.NUMBER.value
     elif isinstance(v, date):
-        return DATETIME
+        return C.DATETIME.value
     elif isinstance(v, datetime):
-        return DATETIME
+        return C.DATETIME.value
     else:
         logger.warning(f"Categorizing this value as a string: {v}")
-        return STRING
+        return C.STRING.value
 
 def get_pattern(l: list) -> dict:
     """
@@ -259,18 +225,18 @@ def make_html_header(title: str, root_output_file: str = None) -> str:
         <meta charset="utf-8">
         <title>Exploratory Data Analysis</title>
         <style>
-            html {OPEN}
+            html {{  # Needs to be doubled because it is within an f-string
                 font-family: monospace;
                 font-size: smaller;
-            {CLOSE}
-            h1, h2, h3, p, img, div {OPEN}
+            }}
+            h1, h2, h3, p, img, div {{
                 text-align: center;
-            {CLOSE}
-            table, tr, td {OPEN}
+            }}
+            table, tr, td {{
                 border: 1px solid #000;
                 margin-left: auto;
                 margin-right: auto;
-            {CLOSE}
+            }}
         </style>
         </head>
         <body>
@@ -299,14 +265,14 @@ def is_data_file(input_argument: str) -> bool:
     :param input_argument: what the user provided
     :return: True if we think this is a data file, else False
     """
-    for suffix in C.PARQUET_EXTENSION.value, C.CSV_EXTENSION.value, ".dat", ".txt", ".dsv":
+    for suffix in BASE_CONSTANTS.PARQUET_EXTENSION.value, BASE_CONSTANTS.CSV_EXTENSION.value, ".dat", ".txt", ".dsv":
         if input_argument.lower().endswith(suffix):
             return True
     return False
 
 
 parser = argparse.ArgumentParser(
-    description='Profile the data in a database or file. Generates an analysis consisting tables and images stored in an Excel workbook or HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
+    description='Profile the data in a database or file. Generates an analysis consisting tables and images stored HTML pages. For string columns provides a pattern analysis with C replacing letters, 9 replacing numbers, underscore replacing spaces, and question mark replacing everything else. For numeric and datetime columns produces a histogram and box plots.')
 
 parser.add_argument('--input',
                     metavar="/path/to/input_data_file.extension | query-against-database",
@@ -331,20 +297,20 @@ parser.add_argument('--max-detail-values',
                     type=int,
                     metavar="NUM",
                     action=range_action(1, sys.maxsize),
-                    default=DEFAULT_MAX_DETAIL_VALUES,
-                    help=f"Produce this many of the top value occurrences, default is {DEFAULT_MAX_DETAIL_VALUES}.")
+                    default=C.DEFAULT_MAX_DETAIL_VALUES.value,
+                    help=f"Produce this many of the top value occurrences, default is {C.DEFAULT_MAX_DETAIL_VALUES.value}.")
 parser.add_argument('--max-pattern-length',
                     type=int,
                     metavar="NUM",
                     action=range_action(1, sys.maxsize),
-                    default=DEFAULT_MAX_PATTERN_LENGTH,
-                    help=f"When segregating strings into patterns leave untouched strings of length greater than this, default is {DEFAULT_MAX_PATTERN_LENGTH}.")
+                    default=C.DEFAULT_MAX_PATTERN_LENGTH.value,
+                    help=f"When segregating strings into patterns leave untouched strings of length greater than this, default is {C.DEFAULT_MAX_PATTERN_LENGTH.value}.")
 parser.add_argument('--plot-values-limit',
                     type=int,
                     metavar="NUM",
                     action=range_action(1, sys.maxsize),
-                    default=DEFAULT_PLOT_VALUES_LIMIT,
-                    help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {DEFAULT_PLOT_VALUES_LIMIT}.")
+                    default=C.DEFAULT_PLOT_VALUES_LIMIT.value,
+                    help=f"Don't make histograms or box plots when there are fewer than this number of distinct values, and don't make pie charts when there are more than this number of distinct values, default is {C.DEFAULT_PLOT_VALUES_LIMIT.value}.")
 parser.add_argument('--no-pattern',
                     action='store_true',
                     help=f"Don't identify patterns in text columns.")
@@ -364,26 +330,26 @@ parser.add_argument('--max-longest-string',
                     type=int,
                     metavar="NUM",
                     action=range_action(50, sys.maxsize),
-                    default=DEFAULT_LONGEST_LONGEST,
-                    help=f"When displaying long strings show a summary if string exceeds this length, default is {DEFAULT_LONGEST_LONGEST}.")
+                    default=C.DEFAULT_LONGEST_LONGEST.value,
+                    help=f"When displaying long strings show a summary if string exceeds this length, default is {C.DEFAULT_LONGEST_LONGEST.value}.")
 parser.add_argument('--object-sampling-limit',
                     metavar="NUM",
                     action=range_action(1, sys.maxsize),
-                    default=DEFAULT_OBJECT_SAMPLING_COUNT,
-                    help=f"To determine whether a string column can be treated as datetime or numeric sample this number of values, default is {DEFAULT_OBJECT_SAMPLING_COUNT}.")
+                    default=C.DEFAULT_OBJECT_SAMPLING_COUNT.value,
+                    help=f"To determine whether a string column can be treated as datetime or numeric sample this number of values, default is {C.DEFAULT_OBJECT_SAMPLING_COUNT.value}.")
 parser.add_argument('--object-conversion-allowed-error-rate',
                     metavar="NUM",
                     action=range_action(1, 100),
-                    default=DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE,
-                    help=f"To determine whether a string column can be treated as datetime or numeric allow up to this percentage of values to remain un-parseable, default is {DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE}.")
+                    default=C.DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE.value,
+                    help=f"To determine whether a string column can be treated as datetime or numeric allow up to this percentage of values to remain un-parseable, default is {C.DEFAULT_OBJECT_CONVERSION_ALLOWED_ERROR_RATE.value}.")
 parser.add_argument('--target-dir',
                     metavar="/path/to/dir",
                     default=Path.cwd(),
                     help="Default is the current directory. Will make intermediate directories as necessary.")
 parser.add_argument('--output-file-name',
                     metavar="NAME",
-                    default=DEFAULT_FILE_BASE_NAME,
-                    help=f"Default is, in order: input file name, table name from query if it can be determined, '{DEFAULT_FILE_BASE_NAME}'.")
+                    default=C.DEFAULT_FILE_BASE_NAME.value,
+                    help=f"Default is, in order: input file name, table name from query if it can be determined, '{C.DEFAULT_FILE_BASE_NAME.value}'.")
 parser.add_argument('--db-host-name',
                     metavar="HOST_NAME",
                     help="Overrides HOST_NAME environment variable. Ignored when getting data from a file.")
@@ -460,7 +426,7 @@ else:
 
 
 # Determine output file name if not provided on command line
-if output_file_name == DEFAULT_FILE_BASE_NAME:
+if output_file_name == C.DEFAULT_FILE_BASE_NAME.value:
     if input_path:
         # Data is from a file
         output_file_name = input_path.stem
@@ -475,7 +441,7 @@ input_df = None
 data_dict = defaultdict(list)
 # ↑ Keys are column_names, values are a list of values from the data.
 datatype_dict = dict()
-# ↑ Keys are column_names, values are the type of data (NUMBER, DATETIME, STRING)
+# ↑ Keys are column_names, values are the type of data (C.NUMBER.value, C.DATETIME.value, C.STRING.value)
 if input_query:
     SAVED_DATA_FILE = Path.home() / "PycharmProjects" / "t7" / "profile.pickle"
     if SAVED_DATA_FILE.exists():
@@ -503,7 +469,7 @@ if input_query:
 else:
     # Data is coming from a file
     logger.info(f"Reading from '{input_path}' ...")
-    if input_path.name.endswith(C.PARQUET_EXTENSION.value):
+    if input_path.name.endswith(BASE_CONSTANTS.PARQUET_EXTENSION.value):
         input_df = pl.read_table(input_path).to_pandas()
     else:
         input_df = pl.read_csv(input_path, delimiter=delimiter, header=header_lines)
@@ -539,7 +505,7 @@ else:
         if failure_ratio <= object_conversion_allowed_error_rate:
             logger.info(f"Casting column '{column_name}' as a datetime ...")
             input_df[column_name] = pl.to_datetime(s.apply(safe_convert_str_to_datetime))
-            datatype_dict[column_name] = DATETIME
+            datatype_dict[column_name] = C.DATETIME.value
         else:
             logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as a datetime.")
             failure_count = 0
@@ -552,11 +518,11 @@ else:
             if failure_ratio <= object_conversion_allowed_error_rate:
                 logger.info(f"Casting column '{column_name}' as numeric ...")
                 input_df[column_name] = pl.to_numeric(s, errors="coerce")
-                datatype_dict[column_name] = NUMBER
+                datatype_dict[column_name] = C.NUMBER.value
             else:
                 logger.debug(f"Error rate of {100 * failure_ratio:.1f}% when attempting to cast column '{column_name}' as numeric.")
                 logger.info(f"Will keep column '{column_name}' as a string.")
-                datatype_dict[column_name] = STRING
+                datatype_dict[column_name] = C.STRING.value
 
 # To temporarily hold plots and html files
 tempdir = tempfile.TemporaryDirectory()
@@ -584,61 +550,61 @@ for column_name in input_df.columns:
         logger.warning(f"Skipping column '{column_name}' because it is empty.")
         summary_dict[column_name] = dict()
         continue
-    column_dict = dict.fromkeys(ANALYSIS_LIST)
+    column_dict = dict.fromkeys(C.ANALYSIS_LIST.value)
     # Row count
     row_count = len(values)
-    column_dict[ROW_COUNT] = row_count
+    column_dict[C.ROW_COUNT.value] = row_count
     # Null
     null_count = row_count - len(non_null_series)
-    column_dict[NULL_COUNT] = null_count
+    column_dict[C.NULL_COUNT.value] = null_count
     # Null%
-    column_dict[NULL_PERCENT] = round(100 * null_count / row_count, ROUNDING)
+    column_dict[C.NULL_PERCENT.value] = round(100 * null_count / row_count, C.ROUNDING.value)
     # Unique
     unique_count = len(values.unique())
-    column_dict[UNIQUE_COUNT] = unique_count
+    column_dict[C.UNIQUE_COUNT.value] = unique_count
     # Unique%
-    column_dict[UNIQUE_PERCENT] = round(100 * unique_count / row_count, ROUNDING)
+    column_dict[C.UNIQUE_PERCENT.value] = round(100 * unique_count / row_count, C.ROUNDING.value)
 
     if null_count != row_count:
         temp = "temp"
         # Largest & smallest
-        column_dict[LARGEST] = max(non_null_series.to_list())
-        column_dict[SMALLEST] = min(non_null_series.to_list())
-        if datatype == STRING:
+        column_dict[C.LARGEST] = max(non_null_series.to_list())
+        column_dict[C.SMALLEST] = min(non_null_series.to_list())
+        if datatype == C.STRING.value:
             # Longest & shortest
             min_len = min(non_null_series.str.len_chars())
             candidates = non_null_series.filter(non_null_series.str.len_chars() == min_len)
             shortest_string = candidates.to_list().pop()
-            column_dict[SHORTEST] = format_long_string(shortest_string, max_longest_string)
+            column_dict[C.SHORTEST] = format_long_string(shortest_string, max_longest_string)
             max_len = max(non_null_series.str.len_chars())
             candidates = non_null_series.filter(non_null_series.str.len_chars() == max_len)
             shortest_string = candidates.to_list().pop()
-            column_dict[LONGEST] = format_long_string(shortest_string, max_longest_string)
+            column_dict[C.LONGEST] = format_long_string(shortest_string, max_longest_string)
             # No mean/quartiles/stddev statistics for strings
-        elif datatype == NUMBER:
+        elif datatype == C.NUMBER.value:
             # No longest/shortest for numbers and dates
-            column_dict[SHORTEST] = None
-            column_dict[LONGEST] = None
+            column_dict[C.SHORTEST] = None
+            column_dict[C.LONGEST] = None
             # Mean/quartiles/stddev statistics
-            column_dict[MEAN] = non_null_series.mean()
-            column_dict[STDDEV] = non_null_series.std()
-            column_dict[PERCENTILE_25TH] = non_null_series.quantile(0.25)
-            column_dict[MEDIAN] = non_null_series.quantile(0.5)
-            column_dict[PERCENTILE_75TH] = non_null_series.quantile(0.75)
-        elif datatype == DATETIME:
+            column_dict[C.MEAN] = non_null_series.mean()
+            column_dict[C.STDDEV] = non_null_series.std()
+            column_dict[C.PERCENTILE_25TH] = non_null_series.quantile(0.25)
+            column_dict[C.MEDIAN] = non_null_series.quantile(0.5)
+            column_dict[C.PERCENTILE_75TH] = non_null_series.quantile(0.75)
+        elif datatype == C.DATETIME.value:
             # No longest/shortest for numbers and dates
-            column_dict[SHORTEST] = None
-            column_dict[LONGEST] = None
+            column_dict[C.SHORTEST] = None
+            column_dict[C.LONGEST] = None
             # Mean/quartiles/stddev statistics
-            column_dict[MEAN] = non_null_series.mean()
-            column_dict[MEDIAN] = non_null_series.median()
+            column_dict[C.MEAN] = non_null_series.mean()
+            column_dict[C.MEDIAN] = non_null_series.median()
             # quartiles/stddev cannot be calculated directly on datetimes
-            temp_series = non_null_series.dt.epoch('ms')
-            column_dict[STDDEV] = convert_seconds(temp_series.std() / 1000)  # Returns e.g. 123:12:34:56
-            percentile_25th = temp_series.quantile(0.25) / 1000  # epoch
-            column_dict[PERCENTILE_25TH] = datetime.fromtimestamp(percentile_25th)
-            percentile_75th = temp_series.quantile(0.25) / 1000  # epoch
-            column_dict[PERCENTILE_75TH] = datetime.fromtimestamp(percentile_75th)
+            epoch_series = non_null_series.dt.epoch('ms')
+            column_dict[C.STDDEV] = convert_seconds(epoch_series.std() / 1000)  # Returns e.g. 123:12:34:56
+            percentile_25th = epoch_series.quantile(0.25) / 1000  # epoch
+            column_dict[C.PERCENTILE_25TH] = datetime.fromtimestamp(percentile_25th)
+            percentile_75th = epoch_series.quantile(0.25) / 1000  # epoch
+            column_dict[C.PERCENTILE_75TH] = datetime.fromtimestamp(percentile_75th)
             logger.info(column_dict)
         else:
             raise Exception("Programming error.")
@@ -651,8 +617,8 @@ for column_name in input_df.columns:
         max_length = min(max_detail_values, len(values))
         most_common_list = counter.most_common(max_length)
         most_common, most_common_count = most_common_list[0]
-        column_dict[MOST_COMMON] = most_common
-        column_dict[MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, ROUNDING)
+        column_dict[C.MOST_COMMON] = most_common
+        column_dict[C.MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, C.ROUNDING.value)
         detail_df = pl.DataFrame()
         i = 0
         # Create 3-column descending visual
@@ -665,43 +631,71 @@ for column_name in input_df.columns:
         s = pl.Series("count", [x[1] for x in most_common_list])
         detail_df = detail_df.insert_column(i, s)
         i += 1
-        s = pl.Series("%total", [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_list])
+        s = pl.Series("%total", [round(x[1] * 100 / row_count, C.ROUNDING.value) for x in most_common_list])
         detail_df = detail_df.insert_column(i, s)
         i += 1
-        s = pl.Series("histogram", [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_list])
+        s = pl.Series("histogram", [C.BLACK_SQUARE.value * round(x[1] * 100 / row_count) for x in most_common_list])
         detail_df = detail_df.insert_column(i, s)
         detail_dict[column_name] = detail_df
 
     # Produce visuals
-    values = pl.Series(values)
-    plot_data = values.value_counts(normalize=True)
+    plot_data = non_null_series.value_counts(normalize=True)
     # Produce a pattern analysis for strings
-    if is_pattern and datatype == STRING and row_count:
+    if is_pattern and datatype == C.STRING.value and row_count:
         pattern_counter = get_pattern(non_null_series[column_name].to_list())
         max_length = min(max_detail_values, len(non_null_series))
         most_common_pattern_list = pattern_counter.most_common(max_length)
         pattern_df = pl.DataFrame()
+        i = 0
         # Create 3-column descending visual
-        pattern_df["rank"] = list(range(1, len(most_common_pattern_list) + 1))
-        pattern_df["pattern"] = [x[0] for x in most_common_pattern_list]
-        pattern_df["count"] = [x[1] for x in most_common_pattern_list]
-        pattern_df["%total"] = [round(x[1] * 100 / row_count, ROUNDING) for x in most_common_pattern_list]
-        pattern_df["histogram"] = [BLACK_SQUARE * round(x[1] * 100 / row_count) for x in most_common_pattern_list]
+        s = pl.Series("rank", list(range(1, len(most_common_list) + 1)))
+        pattern_df = pattern_df.insert_column(i, s)
+        i += 1
+        s = pl.Series("value", [x[0] for x in most_common_list])
+        pattern_df = pattern_df.insert_column(i, s)
+        i += 1
+        s = pl.Series("count", [x[1] for x in most_common_list])
+        pattern_df = pattern_df.insert_column(i, s)
+        i += 1
+        s = pl.Series("%total", [round(x[1] * 100 / row_count, C.ROUNDING.value) for x in most_common_list])
+        pattern_df = pattern_df.insert_column(i, s)
+        i += 1
+        s = pl.Series("histogram", [C.BLACK_SQUARE.value * round(x[1] * 100 / row_count) for x in most_common_list])
+        pattern_df = pattern_df.insert_column(i, s)
         pattern_dict[column_name] = pattern_df
     else:  # Numeric/datetime data
-        try:
-            values_to_plot = values.astype(FLOAT)
-        except TypeError as e:
-            values_to_plot = values
         if is_histogram and len(plot_data) >= plot_values_limit:
             logger.info("Creating a histogram plot ...")
             plot_output_path = tempdir_path / f"{column_name}.histogram.png"
-            plt.figure(figsize=(PLOT_SIZE_X/2, PLOT_SIZE_Y/2))
-            ax = values_to_plot.plot.hist(bins=min(20, len(values_to_plot)))
-            ax.set_xlabel(column_name)
-            ax.set_ylabel("Count")
-            plt.savefig(plot_output_path)
-            plt.close('all')  # Save memory
+            maxbins = min(20, len(non_null_series))
+            scale = alt.Scale()  # Can customize later
+            # Altair can plot Datetimes, but only if they are naive
+            if datatype == C.DATETIME.value:
+                s_naive = (
+                    non_null_series
+                    .dt.convert_time_zone("UTC")  # ensure everything is UTC
+                    .dt.replace_time_zone(None)  # drop tz info (now naive)
+                )
+                plot_data_df = s_naive.to_frame().to_pandas()
+                encoding = "T"  # temporal
+                axis = alt.Axis(format="%Y-%m-%d")
+            else:
+                plot_data_df = non_null_series.to_frame().to_pandas()
+                encoding = "Q"  # quantitative
+            chart = alt.Chart(
+                plot_data_df,
+                width=C.PLOT_SIZE_X.value/2,
+                height=C.PLOT_SIZE_Y.value/2,
+                ).mark_bar().encode(
+                x=alt.X(f"{column_name}:{encoding}", bin=alt.Bin(maxbins=maxbins), title=column_name),
+                y=alt.Y("count()", title="count")
+            )
+            chart.save(plot_output_path)
+            # ax = non_null_series.to_list().plot.hist(bins=min(20, len(non_null_series)))
+            # ax.set_xlabel(column_name)
+            # ax.set_ylabel("Count")
+            # plt.savefig(plot_output_path)
+            # plt.close('all')  # Save memory
             logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
             histogram_plot_list.append(column_name)
         if is_box and len(non_null_series) >= plot_values_limit:
@@ -710,12 +704,12 @@ for column_name in input_df.columns:
             fig, axs = plt.subplots(
                 nrows=2,
                 ncols=1,
-                figsize=(PLOT_SIZE_X, PLOT_SIZE_Y)
+                figsize=(C.PLOT_SIZE_X.value, C.PLOT_SIZE_Y.value)
             )
             sns.boxplot(
                 ax=axs[0],
                 data=None,
-                x=values_to_plot,
+                x=non_null_series.to_list(),
                 showfliers=True,
                 orient="h"
             )
@@ -723,7 +717,7 @@ for column_name in input_df.columns:
             sns.boxplot(
                 ax=axs[1],
                 data=None,
-                x=values_to_plot,
+                x=non_null_series.to_list(),
                 showfliers=False,
                 orient="h"
             )
@@ -813,7 +807,7 @@ logger.info(f"Wrote {os.stat(output_file).st_size:,} bytes to '{output_file}'.")
 
 if cleaned_version_output_file:
     target_path = target_dir / cleaned_version_output_file
-    if cleaned_version_output_file.lower().endswith(C.CSV_EXTENSION):
+    if cleaned_version_output_file.lower().endswith(BASE_CONSTANTS.CSV_EXTENSION):
         zipped_target_path = target_path.with_suffix(".zip")
         compression_opts = dict(method='zip', archive_name=cleaned_version_output_file)
         input_df.to_csv(zipped_target_path, index=False, compression=compression_opts)
