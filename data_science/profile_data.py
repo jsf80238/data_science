@@ -2,30 +2,27 @@ import argparse
 from collections import Counter, defaultdict
 import csv
 from datetime import date, datetime
-from decimal import Decimal
 import enum
 import pickle
 from pathlib import Path
 import os
-import random
 import re
 import shutil
-from statistics import mean, quantiles, stdev
 import sys
 import tempfile
 # Imports above are standard Python
 # Imports below are 3rd-party
-import altair as alt
 from argparse_range import range_action
 import dateutil.parser
 from dotenv import dotenv_values
-from matplotlib import pyplot as plt
 import polars as pl
-import seaborn as sns
 
 # Imports below are custom
 from lib.base import C as BASE_CONSTANTS
 from lib.base import Database, Logger, get_line_count
+from lib.helper import C as HELPER_CONSTANTS
+from lib.helper import is_column_number, is_column_datetime, is_column_string, make_histogram, make_box_plot
+
 
 class C(enum.Enum):
     ROUNDING = 1  # 5.4% for example
@@ -520,6 +517,7 @@ for column_name in input_df.columns:
     if len(non_null_series) == 0:
         logger.warning(f"Skipping column '{column_name}' because it is empty.")
         continue
+    logger.info(f"Analyzing column '{column_name}' ...")
     # Row count
     row_count = len(values)
     column_dict[C.ROW_COUNT.value] = row_count
@@ -535,8 +533,8 @@ for column_name in input_df.columns:
     column_dict[C.UNIQUE_PERCENT.value] = round(100 * unique_count / row_count, C.ROUNDING.value)
 
     # Largest & smallest
-    column_dict[C.LARGEST] = max(non_null_series.to_list())
-    column_dict[C.SMALLEST] = min(non_null_series.to_list())
+    column_dict[C.LARGEST.value] = max(non_null_series.to_list())
+    column_dict[C.SMALLEST.value] = min(non_null_series.to_list())
     if column_name in string_column_set:
         # This may not be a Polars string, but we are treating it as such
         non_null_series = non_null_series.cast(pl.String)
@@ -544,37 +542,36 @@ for column_name in input_df.columns:
         min_len = min(non_null_series.str.len_chars())
         candidates = non_null_series.filter(non_null_series.str.len_chars() == min_len)
         shortest_string = candidates.to_list().pop()
-        column_dict[C.SHORTEST] = format_long_string(shortest_string, max_longest_string)
+        column_dict[C.SHORTEST.value] = format_long_string(shortest_string, max_longest_string)
         max_len = max(non_null_series.str.len_chars())
         candidates = non_null_series.filter(non_null_series.str.len_chars() == max_len)
         shortest_string = candidates.to_list().pop()
-        column_dict[C.LONGEST] = format_long_string(shortest_string, max_longest_string)
+        column_dict[C.LONGEST.value] = format_long_string(shortest_string, max_longest_string)
         # No mean/quartiles/stddev statistics for strings
     elif column_name in numeric_column_set:
         # No longest/shortest for numbers and dates
-        column_dict[C.SHORTEST] = None
-        column_dict[C.LONGEST] = None
+        column_dict[C.SHORTEST.value] = None
+        column_dict[C.LONGEST.value] = None
         # Mean/quartiles/stddev statistics
-        column_dict[C.MEAN] = non_null_series.mean()
-        column_dict[C.STDDEV] = non_null_series.std()
-        column_dict[C.PERCENTILE_25TH] = non_null_series.quantile(0.25)
-        column_dict[C.MEDIAN] = non_null_series.quantile(0.5)
-        column_dict[C.PERCENTILE_75TH] = non_null_series.quantile(0.75)
+        column_dict[C.MEAN.value] = non_null_series.mean()
+        column_dict[C.STDDEV.value] = non_null_series.std()
+        column_dict[C.PERCENTILE_25TH.value] = non_null_series.quantile(0.25)
+        column_dict[C.MEDIAN.value] = non_null_series.quantile(0.5)
+        column_dict[C.PERCENTILE_75TH.value] = non_null_series.quantile(0.75)
     elif column_name in datetime_column_set:
         # No longest/shortest for numbers and dates
-        column_dict[C.SHORTEST] = None
-        column_dict[C.LONGEST] = None
+        column_dict[C.SHORTEST.value] = None
+        column_dict[C.LONGEST.value] = None
         # Mean/quartiles/stddev statistics
-        column_dict[C.MEAN] = non_null_series.mean()
-        column_dict[C.MEDIAN] = non_null_series.median()
+        column_dict[C.MEAN.value] = non_null_series.mean()
+        column_dict[C.MEDIAN.value] = non_null_series.median()
         # quartiles/stddev cannot be calculated directly on datetimes
         epoch_series = non_null_series.dt.epoch('ms')
-        column_dict[C.STDDEV] = convert_seconds(epoch_series.std() / 1000)  # Returns e.g. 123:12:34:56
+        column_dict[C.STDDEV.value] = convert_seconds(epoch_series.std() / 1000)  # Returns e.g. 123:12:34:56
         percentile_25th = epoch_series.quantile(0.25) / 1000  # epoch
-        column_dict[C.PERCENTILE_25TH] = datetime.fromtimestamp(percentile_25th)
+        column_dict[C.PERCENTILE_25TH.value] = datetime.fromtimestamp(percentile_25th)
         percentile_75th = epoch_series.quantile(0.25) / 1000  # epoch
-        column_dict[C.PERCENTILE_75TH] = datetime.fromtimestamp(percentile_75th)
-        logger.info(column_dict)
+        column_dict[C.PERCENTILE_75TH.value] = datetime.fromtimestamp(percentile_75th)
 
     # Value counts
     # Collect no more than number of values available or what was given on the command-line
@@ -583,8 +580,8 @@ for column_name in input_df.columns:
     max_length = min(max_detail_values, len(values))
     most_common_list = counter.most_common(max_length)
     most_common, most_common_count = most_common_list[0]
-    column_dict[C.MOST_COMMON] = most_common
-    column_dict[C.MOST_COMMON_PERCENT] = round(100 * most_common_count / row_count, C.ROUNDING.value)
+    column_dict[C.MOST_COMMON.value] = most_common
+    column_dict[C.MOST_COMMON_PERCENT.value] = round(100 * most_common_count / row_count, C.ROUNDING.value)
     detail_df = pl.DataFrame()
     i = 0
     # Create 3-column descending visual
@@ -604,11 +601,9 @@ for column_name in input_df.columns:
     detail_df = detail_df.insert_column(i, s)
     detail_dict[column_name] = detail_df
 
-    # Produce visuals
-
     # Produce a pattern analysis for strings
     if is_pattern and column_name in string_column_set:
-        plot_data = non_null_series.value_counts(normalize=True)
+        pattern_analysis_data = non_null_series.value_counts(normalize=True)
         pattern_counter = get_pattern(non_null_series.to_list())
         max_length = min(max_detail_values, len(non_null_series))
         most_common_pattern_list = pattern_counter.most_common(max_length)
@@ -630,54 +625,10 @@ for column_name in input_df.columns:
         s = pl.Series("histogram", [C.BLACK_SQUARE.value * round(x[1] * 100 / row_count) for x in most_common_list])
         pattern_df = pattern_df.insert_column(i, s)
         pattern_dict[column_name] = pattern_df
-    else:  # Numeric/datetime data
-        if column_name in datetime_column_set:
-            # Altair can plot Datetimes, but only if they are naive
-            s_naive = (
-                non_null_series
-                .dt.convert_time_zone("UTC")  # ensure everything is UTC
-                .dt.replace_time_zone(None)  # drop tz info (now naive)
-            )
-            plot_data_df = s_naive.to_frame().to_pandas()
-        else:
-            plot_data_df = non_null_series.to_frame().to_pandas()
-        if is_histogram and len(plot_data) >= plot_values_limit:
-            logger.info("Creating a histogram plot ...")
-            plot_output_path = tempdir_path / f"{column_name}.histogram.png"
-            num_bins = min(20, len(non_null_series))
-            scale = alt.Scale()  # Can customize later
-            if column_name in datetime_column_set:
-                chart = (
-                    alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value, height=C.PLOT_SIZE_Y.value)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X(
-                            f"{column_name}:T",
-                            bin=alt.Bin(maxbins=num_bins),
-                            title=column_name,
-                            axis=alt.Axis(format="%Y-%m-%d", labelAngle=45)
-                        ),
-                        y=alt.Y("count()", title="count"),
-                    )
-                )
-            else:  # Numeric
-                plot_data_df = non_null_series.to_frame().to_pandas()
-                chart = (
-                    alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value, height=C.PLOT_SIZE_Y.value)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X(
-                            f"{column_name}:Q",
-                            bin=alt.Bin(maxbins=num_bins),
-                            title=column_name,
-                            axis=alt.Axis(labelAngle=45)
-                        ),
-                        y=alt.Y("count()", title="count"),
-                    )
-                )
-            chart.save(plot_output_path)
-            logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
-            histogram_plot_list.append(column_name)
+    else:
+        result_path, size = make_histogram(non_null_series, tempdir_path, C.PLOT_SIZE_X.value, C.PLOT_SIZE_Y.value)
+        logger.info(f"Wrote {size:,} bytes to '{result_path}'.")
+        histogram_plot_list.append(column_name)
         if is_box and len(non_null_series) >= plot_values_limit:
             logger.info("Creating box plots ...")
             box_with_outliers_output_path = tempdir_path / f"{column_name}.box_with_outliers.png"
