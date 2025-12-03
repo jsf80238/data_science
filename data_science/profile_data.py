@@ -11,7 +11,8 @@ import shutil
 import sys
 import tempfile
 # Imports above are standard Python
-# Imports below are 3rd-party
+# Imports below are custom/3rd-party
+import altair as alt
 from argparse_range import range_action
 import dateutil.parser
 from dotenv import dotenv_values
@@ -19,15 +20,12 @@ import polars as pl
 
 # Imports below are custom
 from lib.base import C as BASE_CONSTANTS
-from lib.base import Database, Logger, get_line_count
-from lib.helper import C as HELPER_CONSTANTS
-from lib.helper import is_column_number, is_column_datetime, is_column_string, make_histogram, make_box_plot
+from lib.base import Database, Logger, get_line_count, dict_to_sortable_html_table, polars_df_to_html_table
 
 
 class C(enum.Enum):
     ROUNDING = 1  # 5.4% for example
-    DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
-    # Headings for Excel output
+    # Headings for output
     VALUE, COUNT = "Value", "Count"
     # Datatypes
     NUMBER, DATETIME, STRING = "NUMBER", "DATETIME", "STRING"
@@ -54,6 +52,7 @@ class C(enum.Enum):
     NULL_PERCENT = "%null"
     UNIQUE_COUNT = "unique"
     UNIQUE_PERCENT = "%unique"
+    UTC = "UTC"
     MOST_COMMON = "most_common"
     MOST_COMMON_PERCENT = "%most_common"
     LARGEST = "largest"
@@ -61,9 +60,9 @@ class C(enum.Enum):
     LONGEST = "longest"
     SHORTEST = "shortest"
     MEAN = "mean"
-    PERCENTILE_25TH = "percentile_25th"
+    PERCENTILE_25TH = "P25th"
     MEDIAN = "median"
-    PERCENTILE_75TH = "percentile_75th"
+    PERCENTILE_75TH = "P75th"
     STDDEV = "stddev"
     FLOAT = "float"
 
@@ -165,6 +164,173 @@ def get_pattern(l: list) -> dict:
     return counter
 
 
+def get_datatype(v: pl.Series) -> str:
+    """
+    | Return one of: C.STRING.value, C.NUMBER.value, C.DATETIME.value
+    |
+    | Examples:
+    | "hi joe." --> C.STRING.value
+    | True --> C.STRING.value
+    | 0 --> C.NUMBER.value
+    | 1.1 --> C.NUMBER.value
+    | 2025-11-29 -> C.DATETIME.value
+    | 2025-11-29 22:56:54.060000+00:00 -> C.DATETIME.value
+
+    :param v: the column we are trying to type
+    :return: the type
+    """
+    if v.dtype in (pl.Decimal, pl.Float32, pl.Float64, pl.Int128, pl.Int16, pl.Int32, pl.Int64, pl.Int8, pl.UInt16, pl.UInt32, pl.UInt64, pl.UInt8):
+        return C.NUMBER.value
+    elif v.dtype in (pl.Date, pl.Datetime, pl.Duration, pl.Time):
+        return C.DATETIME.value
+    else:
+        return C.STRING.value
+
+
+def is_series_string(v: pl.Series) -> bool:
+    return get_datatype(v) == C.STRING.value
+
+
+def is_series_number(v: pl.Series) -> bool:
+    return get_datatype(v) == C.NUMBER.value
+
+
+def is_series_datetime(v: pl.Series) -> bool:
+    return get_datatype(v) == C.DATETIME.value
+
+
+class Plotter:
+    def __init__(
+            self,
+            data_series: pl.Series,
+            save_to_path: Path,
+            width: int = C.PLOT_SIZE_X.value,
+            height: int = C.PLOT_SIZE_Y.value,
+    ):
+        self.data_series = data_series
+        self.column_name = data_series.name
+        self.save_to_path = save_to_path
+        self.width = width
+        self.height = height
+        if is_series_datetime(data_series):
+            # Altair can plot Datetimes, but only if they are naive
+            s_naive = (
+                data_series
+                .dt.convert_time_zone(C.UTC.value)  # ensure everything is UTC
+                .dt.replace_time_zone(None)  # drop tz info (now naive)
+            )
+            self.plotting_df = s_naive.to_frame().to_pandas()
+        else:
+            self.plotting_df = data_series.to_frame().to_pandas()
+
+    def make_histogram(self) -> (Path, int):
+        output_path = self.save_to_path / f"{self.column_name}.histogram.png"
+        num_bins = min(20, len(self.data_series))
+        if is_series_datetime(self.data_series):
+            chart = (
+                alt.Chart(self.plotting_df, width=self.width, height=self.width)
+                .mark_bar()
+                .encode(
+                    x=alt.X(
+                        f"{self.column_name}:T",
+                        bin=alt.Bin(maxbins=num_bins),
+                        title=self.column_name,
+                        axis=alt.Axis(format="%Y-%m-%d", labelAngle=45)
+                    ),
+                    y=alt.Y("count()", title="count"),
+                )
+            )
+        else:  # Numeric
+            chart = (
+                alt.Chart(self.plotting_df, width=self.width, height=self.height)
+                .mark_bar()
+                .encode(
+                    x=alt.X(
+                        f"{self.column_name}:Q",
+                        bin=alt.Bin(maxbins=num_bins),
+                        title=self.column_name,
+                        axis=alt.Axis(labelAngle=45)
+                    ),
+                    y=alt.Y("count()", title="count"),
+                )
+            )
+        chart.save(output_path)
+        return output_path, os.stat(output_path).st_size
+
+    def make_box_plot(self, is_include_outliers: bool) -> (Path, int):
+        output_path = self.save_to_path / f"{self.column_name}.histogram.png"
+        if is_include_outliers:
+            output_path = tempdir_path / f"{column_name}.box_with_outliers.png"
+            extent = 1.5
+            title = f"{self.column_name} with outliers"
+        else:
+            output_path = tempdir_path / f"{column_name}.box_without_outliers.png"
+            extent = "min-max"
+            title = f"{self.column_name} without outliers"
+        if is_series_datetime(self.data_series):
+            channel_type = "T"
+        else:
+            channel_type = "Q"
+        box = (
+            alt.Chart(self.plotting_df, width=self.width, height=self.height/15)
+            .mark_boxplot(extent=extent, orient="horizontal")
+            .encode(
+                x=f"{self.column_name}:{channel_type}",
+                y=alt.value(0),
+            )
+            .properties(title=title)
+        )
+        box.save(output_path)
+        return output_path, os.stat(output_path).st_size
+
+    def make_pie_chart(self) -> (Path, int):
+        output_path = self.save_to_path / f"{self.column_name}.pie.png"
+        counts_df = self.data_series.value_counts().to_pandas()
+        if is_series_datetime(self.data_series):
+            channel_type = "T"
+        else:
+            channel_type = "Q"
+        pie = (
+            alt.Chart(counts_df, width=self.width, height=self.height)
+            .mark_arc()
+            .encode(
+                theta=alt.Theta(f"count:{channel_type}", stack=True),
+                color=alt.Color(f"{self.column_name}:N", title=self.column_name),
+                tooltip=[
+                    alt.Tooltip(f"{self.column_name}:N"),
+                    alt.Tooltip(f"count:{channel_type}")
+                ]
+            )
+        )
+        pie.save(output_path)
+        return output_path, os.stat(output_path).st_size
+
+    def make_pattern_analysis(self, max_detail_values: int) -> pl.DataFrame:
+        def get_pattern(s: str) -> str:
+            s = re.sub("[a-zA-Z]", "C", s)  # Replace letters with 'C'
+            s = re.sub(r"\d", "9", s)  # Replace numbers with '9'
+            s = re.sub(r"\s+", "_", s)  # Replace whitespace with '_'
+            s = re.sub(r"\W", "?", s)  # Replace anything else with '?'
+            # Group long sequences of letters or numbers
+            # See https://stackoverflow.com/questions/76230795/replace-characters-with-a-count-of-characters
+            # The number below (2) means sequences of 3 or more will be grouped
+            s = re.sub(r'(.)\1{2,}', lambda m: f'{m.group(1)}({len(m.group())})', s)
+            return s
+
+        working_series = self.data_series.filter((self.data_series.str.len_chars() > 0) & (self.data_series.str.len_chars() <= max_pattern_length))
+        pattern_series = working_series.map_elements(lambda x: get_pattern(x)).head(max_detail_values)
+        # ↑ produces a column named "count"
+        most_common_df = pattern_series.value_counts().sort(by=C.COUNT.value.lower(), descending=True)
+        data = {
+            "rank": list(range(1, len(most_common_df)+1)),
+            "value": most_common_df[self.column_name],
+            "count": most_common_df[C.COUNT.value.lower()],
+            "%total": (most_common_df[C.COUNT.value.lower()] * 100 / row_count).round(C.ROUNDING.value),
+            "histogram": most_common_df[C.COUNT.value.lower()].round().cast(pl.Int64).map_elements(lambda n: C.BLACK_SQUARE.value * int(n/10))
+        }
+        return pl.DataFrame(data)
+
+
 def make_html_header(title: str, root_output_file: str = None) -> str:
     """
     | Creates the first part of an HTML file.
@@ -206,7 +372,7 @@ def make_html_header(title: str, root_output_file: str = None) -> str:
         </style>
         </head>
         <body>
-            <h1>Exploratory Data Analysis for {title}</h1>
+            <h1>Exploratory Data Analysis For<br>{title}</h1>
             <p>{home_link}</p>
             <div>
     """
@@ -502,15 +668,10 @@ summary_dict = dict()  # To be converted into the summary worksheet
 detail_dict = dict()  # Each element to be converted into a detail worksheet
 pattern_dict = dict()  # For each string column calculate the frequency of patterns
 
-# Determine broad data types
-numeric_column_set = set(input_df.select(pl.selectors.numeric()).columns)
-datetime_column_set = set(input_df.select(pl.selectors.temporal()).columns)
-string_column_set = set(input_df.columns) - numeric_column_set - datetime_column_set
-
 for column_name in input_df.columns:
     values = input_df[column_name]
     column_dict = dict.fromkeys(C.ANALYSIS_LIST.value)
-    if False and not column_name.upper().startswith("IS_EQUITABLE_ACCESS"):  # For testing
+    if False and not column_name.upper().startswith("BILLING_MODEL".upper()):  # For testing
         continue
     # A list of non-null values are useful for some calculations below
     non_null_series = input_df[column_name].drop_nulls().drop_nans()
@@ -518,6 +679,7 @@ for column_name in input_df.columns:
         logger.warning(f"Skipping column '{column_name}' because it is empty.")
         continue
     logger.info(f"Analyzing column '{column_name}' ...")
+    plotter = Plotter(non_null_series, tempdir_path)
     # Row count
     row_count = len(values)
     column_dict[C.ROW_COUNT.value] = row_count
@@ -535,7 +697,7 @@ for column_name in input_df.columns:
     # Largest & smallest
     column_dict[C.LARGEST.value] = max(non_null_series.to_list())
     column_dict[C.SMALLEST.value] = min(non_null_series.to_list())
-    if column_name in string_column_set:
+    if is_series_string(non_null_series):
         # This may not be a Polars string, but we are treating it as such
         non_null_series = non_null_series.cast(pl.String)
         # Longest & shortest
@@ -548,17 +710,17 @@ for column_name in input_df.columns:
         shortest_string = candidates.to_list().pop()
         column_dict[C.LONGEST.value] = format_long_string(shortest_string, max_longest_string)
         # No mean/quartiles/stddev statistics for strings
-    elif column_name in numeric_column_set:
+    elif is_series_number(non_null_series):
         # No longest/shortest for numbers and dates
         column_dict[C.SHORTEST.value] = None
         column_dict[C.LONGEST.value] = None
         # Mean/quartiles/stddev statistics
-        column_dict[C.MEAN.value] = non_null_series.mean()
-        column_dict[C.STDDEV.value] = non_null_series.std()
-        column_dict[C.PERCENTILE_25TH.value] = non_null_series.quantile(0.25)
-        column_dict[C.MEDIAN.value] = non_null_series.quantile(0.5)
-        column_dict[C.PERCENTILE_75TH.value] = non_null_series.quantile(0.75)
-    elif column_name in datetime_column_set:
+        column_dict[C.MEAN.value] = round(non_null_series.mean(), C.ROUNDING.value)
+        column_dict[C.STDDEV.value] = round(non_null_series.std(), C.ROUNDING.value)
+        column_dict[C.PERCENTILE_25TH.value] = round(non_null_series.quantile(0.25), C.ROUNDING.value)
+        column_dict[C.MEDIAN.value] = round(non_null_series.quantile(0.5), C.ROUNDING.value)
+        column_dict[C.PERCENTILE_75TH.value] = round(non_null_series.quantile(0.75), C.ROUNDING.value)
+    elif is_series_datetime(non_null_series):
         # No longest/shortest for numbers and dates
         column_dict[C.SHORTEST.value] = None
         column_dict[C.LONGEST.value] = None
@@ -572,125 +734,58 @@ for column_name in input_df.columns:
         column_dict[C.PERCENTILE_25TH.value] = datetime.fromtimestamp(percentile_25th)
         percentile_75th = epoch_series.quantile(0.25) / 1000  # epoch
         column_dict[C.PERCENTILE_75TH.value] = datetime.fromtimestamp(percentile_75th)
+    summary_dict[column_name] = column_dict
 
     # Value counts
-    # Collect no more than number of values available or what was given on the command-line
-    # whichever is less
-    counter = Counter(non_null_series.to_list())
+    # Collect no more than number of values available or what was given on the command-line, whichever is less
+    # (This is a histogram in the form of a table, but only for the top N occurring values.)
     max_length = min(max_detail_values, len(values))
-    most_common_list = counter.most_common(max_length)
-    most_common, most_common_count = most_common_list[0]
-    column_dict[C.MOST_COMMON.value] = most_common
-    column_dict[C.MOST_COMMON_PERCENT.value] = round(100 * most_common_count / row_count, C.ROUNDING.value)
-    detail_df = pl.DataFrame()
-    i = 0
-    # Create 3-column descending visual
-    s = pl.Series("rank", list(range(1, len(most_common_list) + 1)))
-    detail_df = detail_df.insert_column(i, s)
-    i += 1
-    s = pl.Series("value", [x[0] for x in most_common_list])
-    detail_df = detail_df.insert_column(i, s)
-    i += 1
-    s = pl.Series("count", [x[1] for x in most_common_list])
-    detail_df = detail_df.insert_column(i, s)
-    i += 1
-    s = pl.Series("%total", [round(x[1] * 100 / row_count, C.ROUNDING.value) for x in most_common_list])
-    detail_df = detail_df.insert_column(i, s)
-    i += 1
-    s = pl.Series("histogram", [C.BLACK_SQUARE.value * round(x[1] * 100 / row_count) for x in most_common_list])
-    detail_df = detail_df.insert_column(i, s)
+    most_common_df = non_null_series.value_counts().sort(by=C.COUNT.value.lower(), descending=True).head(max_length)
+    most_common_value = most_common_df[column_name].head(1).to_list().pop()
+    its_count = most_common_df[C.COUNT.value.lower()].head(1).to_list().pop()
+    column_dict[C.MOST_COMMON.value] = most_common_value
+    column_dict[C.MOST_COMMON_PERCENT.value] = round(100 * its_count / row_count, C.ROUNDING.value)
+    data = {
+        "rank": list(range(1, len(most_common_df)+1)),
+        "value": most_common_df[column_name],
+        "count": most_common_df[C.COUNT.value.lower()],
+        "%total": (most_common_df[C.COUNT.value.lower()] * 100 / row_count).round(C.ROUNDING.value),
+        "histogram": most_common_df[C.COUNT.value.lower()].round().cast(pl.Int64).map_elements(lambda n: C.BLACK_SQUARE.value * int(n/10))
+    }
+    detail_df = pl.DataFrame(data)
     detail_dict[column_name] = detail_df
 
     # Produce a pattern analysis for strings
-    if is_pattern and column_name in string_column_set:
-        pattern_analysis_data = non_null_series.value_counts(normalize=True)
-        pattern_counter = get_pattern(non_null_series.to_list())
-        max_length = min(max_detail_values, len(non_null_series))
-        most_common_pattern_list = pattern_counter.most_common(max_length)
-        pattern_df = pl.DataFrame()
-        i = 0
-        # Create 3-column descending visual
-        s = pl.Series("rank", list(range(1, len(most_common_list) + 1)))
-        pattern_df = pattern_df.insert_column(i, s)
-        i += 1
-        s = pl.Series("value", [x[0] for x in most_common_list])
-        pattern_df = pattern_df.insert_column(i, s)
-        i += 1
-        s = pl.Series("count", [x[1] for x in most_common_list])
-        pattern_df = pattern_df.insert_column(i, s)
-        i += 1
-        s = pl.Series("%total", [round(x[1] * 100 / row_count, C.ROUNDING.value) for x in most_common_list])
-        pattern_df = pattern_df.insert_column(i, s)
-        i += 1
-        s = pl.Series("histogram", [C.BLACK_SQUARE.value * round(x[1] * 100 / row_count) for x in most_common_list])
-        pattern_df = pattern_df.insert_column(i, s)
-        pattern_dict[column_name] = pattern_df
-    else:
-        result_path, size = make_histogram(non_null_series, tempdir_path, C.PLOT_SIZE_X.value, C.PLOT_SIZE_Y.value)
+    if is_pattern and is_series_string(non_null_series) and plotter.data_series.dtype != pl.Boolean:
+        logger.info("Creating pattern analysis ...")
+        pattern_dict[column_name] = plotter.make_pattern_analysis(max_detail_values)
+    # Produce histograms, box-plots & pie charts
+    if is_series_number(non_null_series) or is_series_datetime(non_null_series):
+        # Always produce a histogram for numeric/datetime columns
+        logger.info("Creating histogram ...")
+        result_path, size = plotter.make_histogram()
         logger.info(f"Wrote {size:,} bytes to '{result_path}'.")
         histogram_plot_list.append(column_name)
+        # Sometimes produce box plots for numeric/datetime columns
         if is_box and len(non_null_series) >= plot_values_limit:
             logger.info("Creating box plots ...")
-            box_with_outliers_output_path = tempdir_path / f"{column_name}.box_with_outliers.png"
-            box_without_outliers_output_path = tempdir_path / f"{column_name}.box_without_outliers.png"
-            if column_name in datetime_column_set:
-                plot_data_df = s_naive.to_frame().to_pandas()
-                channel_type = "T"
-            else:  # Numeric
-                plot_data_df = non_null_series.to_frame().to_pandas()
-                channel_type = "Q"
-            box_with_outliers = (
-                alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value, height=C.PLOT_SIZE_Y.value/15)
-                .mark_boxplot(extent=1.5, orient="horizontal")
-                .encode(
-                    x=f"{column_name}:{channel_type}",
-                    y=alt.value(0),
-                )
-                .properties(title=f"{column_name} with outliers")
-            )
-            box_without_outliers = (
-                alt.Chart(plot_data_df, width=C.PLOT_SIZE_X.value, height=C.PLOT_SIZE_Y.value/15)
-                .mark_boxplot(extent="min-max", orient="horizontal")
-                .encode(
-                    x=f"{column_name}:{channel_type}",
-                    y=alt.value(0),
-                )
-                .properties(title=f"{column_name} without outliers")
-            )
-            box_with_outliers.save(box_with_outliers_output_path)
-            logger.info(f"Wrote {os.stat(box_with_outliers_output_path).st_size:,} bytes to '{box_with_outliers_output_path}'.")
-            box_without_outliers.save(box_without_outliers_output_path)
-            logger.info(f"Wrote {os.stat(box_without_outliers_output_path).st_size:,} bytes to '{box_without_outliers_output_path}'.")
+            result_path, size = plotter.make_box_plot(is_include_outliers=True)
+            logger.info(f"Wrote {size:,} bytes to '{result_path}'.")
+            result_path, size = plotter.make_box_plot(is_include_outliers=False)
+            logger.info(f"Wrote {size:,} bytes to '{result_path}'.")
             box_plot_list.append(column_name)
-        if is_pie and len(non_null_series) < plot_values_limit:
-            logger.info("Creating pie plot ...")
-            plot_output_path = tempdir_path / f"{column_name}.pie.png"
-            counts_df = non_null_series.value_counts().to_pandas()
-            pie = (
-                alt.Chart(counts_df, width=C.PLOT_SIZE_X.value, height=C.PLOT_SIZE_Y.value)
-                .mark_arc()
-                .encode(
-                    theta=alt.Theta("count:Q", stack=True),
-                    color=alt.Color(f"{column_name}:N", title=column_name),
-                    tooltip=[
-                        alt.Tooltip(f"{column_name}:N"),
-                        alt.Tooltip("count:Q")
-                    ]
-                )
-            )
-            pie.save(plot_output_path)
-            logger.info(f"Wrote {os.stat(plot_output_path).st_size:,} bytes to '{plot_output_path}'.")
-            pie_plot_list.append(column_name)
-
-exit()
-# Convert the summary_dict dictionary of dictionaries to a DataFrame
-result_df = pl.DataFrame.from_dict(summary_dict, orient='index')
+    # Sometimes produce a pie chart
+    elif is_pie and column_dict[C.UNIQUE_COUNT.value] < plot_values_limit:
+        logger.info("Creating pie chart ...")
+        result_path, size = plotter.make_pie_chart()
+        logger.info(f"Wrote {size:,} bytes to '{result_path}'.")
+        pie_plot_list.append(column_name)
 
 # Output
 root_output_dir = tempdir_path / output_file_name
-columns_dir = root_output_dir / "columns"
+column_details_dir = root_output_dir / "column_details"
 images_dir = root_output_dir / "images"
-os.makedirs(columns_dir)
+os.makedirs(column_details_dir)
 os.makedirs(images_dir)
 # Move images
 for _, _, files in tempdir_path.walk():
@@ -700,44 +795,41 @@ for _, _, files in tempdir_path.walk():
 # Generate a detail page, and optionally a pattern page and diagrams, for each column
 for column_name, detail_df in detail_dict.items():
     logger.debug(f"Examining column '{column_name}' ...")
-    target_file = columns_dir / (column_name + DETAIL_ABBR + ".html")
+    target_file = column_details_dir / (column_name + ".html")
     logger.info(f"Writing detail for column '{column_name}' to '{target_file}' ...")
     with open(target_file, "w") as writer:
-        writer.write(make_html_header(f"Exploratory Data Analysis for column: {column_name}", root_output_file=root_output_dir))
+        writer.write(make_html_header(f"Exploratory Data Analysis For<br>Column: {column_name}", root_output_file=root_output_dir))
         writer.write(f"<h2>Detail analysis for column '{column_name}'</h2>")
         writer.write(f"<hr>")
         writer.write(f"<h3>Value frequency</h3>")
-        writer.write(detail_df.to_html(justify="center", na_rep="", index=False))
+        writer.write(polars_df_to_html_table(detail_df))
         if column_name in pattern_dict:
             logger.info(f"Writing pattern information for string column '{column_name}' to '{target_file}' ...")
             writer.write(f"<hr>")
             writer.write(f"<h3>Pattern frequency</h3>")
             pattern_df = pattern_dict[column_name]
-            writer.write(pattern_df.to_html(justify="center", na_rep="", index=False))
+            writer.write(polars_df_to_html_table(pattern_df))
         if column_name in histogram_plot_list:
             logger.info(f"Adding histogram plot for column '{column_name}' to '{target_file}' ...")
             writer.write(f"<hr>")
             writer.write(f"<h3>Histogram</h3>")
             writer.write(f'<img src="../images/{column_name}.histogram.png" alt="Histogram for column :{column_name}:">')
         if column_name in pie_plot_list:
-            logger.info(f"Adding pie plot for column '{column_name}' to '{target_file}' ...")
+            logger.info(f"Adding pie chart for column '{column_name}' to '{target_file}' ...")
             writer.write(f"<hr>")
-            writer.write(f"<h3>Box plots</h3>")
-            writer.write(f'<img src="../images/{column_name}.pie.png" alt="Pie plot for column :{column_name}:">')
+            writer.write(f"<h3>Pie chart</h3>")
+            writer.write(f'<img src="../images/{column_name}.pie.png" alt="Pie chart for column :{column_name}:">')
         if column_name in box_plot_list:
             logger.info(f"Adding box plots for column '{column_name}' to '{target_file}' ...")
             writer.write(f"<hr>")
             writer.write(f"<h3>Box plots</h3>")
-            writer.write(f'<img src="../images/{column_name}.box.png" alt="Box plots for column :{column_name}:">')
+            writer.write(f'<img src="../images/{column_name}.box_with_outliers.png" alt="Box plots for column :{column_name}:">')
+            writer.write(f'<img src="../images/{column_name}.box_without_outliers.png" alt="Box plots for column :{column_name}:">')
         writer.write(make_html_footer())
 with open(root_output_dir / f"{output_file_name}.html", "w") as writer:
     logger.info("Writing summary ...")
-    writer.write(make_html_header(f"Exploratory Data Analysis for {input}"))
-    # Replace column names in summary dataframe with URL links
-    replacement_list = [f'<a href="columns/{x} det.html">{x}</a>' for x in result_df.index]
-    replacement_dict = dict(zip(result_df.index, replacement_list))
-    result_df = result_df.rename(index=replacement_dict)
-    writer.write(result_df.to_html(justify="center", na_rep="", escape=False))
+    writer.write(make_html_header(f"Exploratory Data Analysis For<br>{input}"))
+    writer.write(dict_to_sortable_html_table(summary_dict))
     writer.write(make_html_footer())
 logger.info("Making zip archive ...")
 output_file = shutil.make_archive(
@@ -747,14 +839,3 @@ output_file = shutil.make_archive(
     base_dir=".",
 )
 logger.info(f"Wrote {os.stat(output_file).st_size:,} bytes to '{output_file}'.")
-
-if cleaned_version_output_file:
-    target_path = target_dir / cleaned_version_output_file
-    if cleaned_version_output_file.lower().endswith(BASE_CONSTANTS.CSV_EXTENSION):
-        zipped_target_path = target_path.with_suffix(".zip")
-        compression_opts = dict(method='zip', archive_name=cleaned_version_output_file)
-        input_df.to_csv(zipped_target_path, index=False, compression=compression_opts)
-    else:
-        zipped_target_path = target_path.with_suffix(".gz")
-        input_df.to_parquet(zipped_target_path, index=False, compression="gzip")
-    logger.info(f"Wrote {os.stat(zipped_target_path).st_size:,} bytes to '{zipped_target_path}'.")

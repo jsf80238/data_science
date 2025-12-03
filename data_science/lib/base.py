@@ -1,17 +1,14 @@
-import sys
-from dataclasses import dataclass
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
+from datetime import date, datetime
 import enum
 from inspect import stack, getargvalues, currentframe, FrameInfo
+import html
 import logging
 import os
 from pathlib import Path
 from random import choices
 import re
 from string import ascii_lowercase
-import tempfile
-import types
+import sys
 from typing import Union, Optional, Type, Tuple
 import unicodedata
 # Imports above are standard Python
@@ -318,6 +315,331 @@ def get_line_count(file_path: Union[str, Path]) -> int:
         buf = read_f(buf_size)
 
     return line_count
+
+
+def dict_to_sortable_html_table(data: dict) -> str:
+    """
+    From ChatGPT
+
+    :param data: dictionary with keys as column names and values as dictionaries. _Those_ dictionaries have keys like "%null" or "largest" and the values are the metrics which were calculated for that column.
+    :return: HTML table, nicely formatted, click-to-sort columns
+    """
+    # --- Collect all attribute names (columns) ---
+    # The items in this dictionary are themselves dictionaries,
+    # and all have the same keys.
+    for item in data.values():
+        attributes = item.keys()
+        break
+
+    # Row keys (column names) – keep insertion order from dict
+    col_names = list(data.keys())
+
+    # --- Detect per-column type: "num", "date", "text" ---
+    col_types = {}  # attr -> "num" | "date" | "text"
+
+    def detect_type_for_attr(attr: str) -> str:
+        for attrs in data.values():
+            if attr in attrs and attrs[attr] is not None:
+                v = attrs[attr]
+                if isinstance(v, (int, float)):
+                    return "num"
+                if isinstance(v, (date, datetime)):
+                    return "date"
+                return "text"
+        return "text"
+
+    for attr in attributes:
+        col_types[attr] = detect_type_for_attr(attr)
+
+    # Column name column is always text
+    col_types["_column_name"] = "text"
+
+    # --- Helper: format values & choose CSS class ---
+    def format_value_and_class(val):
+        if val is None:
+            return "", "text-cell"
+
+        if isinstance(val, datetime):
+            # ISO format safe for JS Date, no microseconds
+            val = val.replace(microsecond=0).isoformat()
+            return val, "date-cell"
+
+        if isinstance(val, (datetime, date)):
+            val = val.isoformat()
+            return val, "date-cell"
+
+        if isinstance(val, (int, float)):
+            return str(val), "num-cell"
+
+        return str(val), "text-cell"
+
+    # --- Build HTML ---
+    html_parts = []
+
+    # CSS
+    html_parts.append("""
+<style>
+  table.attr-table {
+    border-collapse: collapse;
+    border: 1px solid #ccc;
+    font-family: sans-serif;
+    font-size: 14px;
+  }
+  .attr-table th,
+  .attr-table td {
+    padding: 4px 8px;
+    border: 1px solid #ccc;
+  }
+  .attr-table th {
+    background-color: #f4f4f4;
+    text-align: center;
+    font-weight: bold;
+    cursor: pointer; /* to indicate clickable sorting */
+    user-select: none;
+  }
+  .attr-table tr:nth-child(even) td {
+    background-color: #fafafa;
+  }
+  .attr-table tr:nth-child(odd) td {
+    background-color: #ffffff;
+  }
+  .text-cell {
+    text-align: left;
+  }
+  .num-cell,
+  .date-cell {
+    text-align: right;
+  }
+</style>
+""".strip())
+
+    # Table with a class that JS can hook into
+    html_parts.append('<table class="attr-table">')
+
+    # Header
+    html_parts.append("<thead>")
+    html_parts.append("<tr>")
+
+    # Column Name header
+    html_parts.append(
+        f'<th data-type="{col_types["_column_name"]}" data-sort-direction="none">'
+        "Column Name</th>"
+    )
+
+    # Attribute headers
+    for attr in attributes:
+        html_parts.append(
+            f'<th data-type="{col_types[attr]}" data-sort-direction="none">'
+            f"{html.escape(attr)}</th>"
+        )
+
+    html_parts.append("</tr>")
+    html_parts.append("</thead>")
+
+    # Body
+    html_parts.append("<tbody>")
+
+    for col_name in col_names:
+        attrs = data.get(col_name, {})
+        html_parts.append("<tr>")
+
+        # Column name cell
+        val_str, css_class = format_value_and_class(col_name)
+        # Change the text into a link for the deeper analysis
+        val_str = f'<a href="column_details/{col_name}.html">{col_name}</a>'
+
+        html_parts.append(
+            f'<td class="{css_class}">{val_str}</td>'
+        )
+
+        # Attribute cells
+        for attr in attributes:
+            val = attrs.get(attr, None)
+            val_str, css_class = format_value_and_class(val)
+            html_parts.append(
+                f'<td class="{css_class}">{html.escape(val_str)}</td>'
+            )
+
+        html_parts.append("</tr>")
+
+    html_parts.append("</tbody>")
+    html_parts.append("</table>")
+
+    # --- JavaScript for sortable columns ---
+    html_parts.append("""
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  const tables = document.querySelectorAll("table.attr-table");
+  tables.forEach(function (table) {
+    const ths = table.querySelectorAll("thead th");
+    ths.forEach(function (th, index) {
+      th.addEventListener("click", function () {
+        const type = th.dataset.type || "text";
+        const tbody = table.querySelector("tbody");
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+
+        // Toggle sort direction
+        let direction = th.dataset.sortDirection === "asc" ? "desc" : "asc";
+        th.dataset.sortDirection = direction;
+
+        // Clear sort direction state on other headers
+        ths.forEach(function (otherTh) {
+          if (otherTh !== th) {
+            otherTh.dataset.sortDirection = "none";
+          }
+        });
+
+        rows.sort(function (rowA, rowB) {
+          const cellA = rowA.children[index].textContent.trim();
+          const cellB = rowB.children[index].textContent.trim();
+
+          // Handle empty cells
+          const emptyA = cellA === "";
+          const emptyB = cellB === "";
+          if (emptyA && emptyB) return 0;
+          if (emptyA) return 1;
+          if (emptyB) return -1;
+
+          let aVal, bVal;
+          if (type === "num") {
+            aVal = parseFloat(cellA);
+            bVal = parseFloat(cellB);
+            if (isNaN(aVal) && isNaN(bVal)) return 0;
+            if (isNaN(aVal)) return 1;
+            if (isNaN(bVal)) return -1;
+            return aVal - bVal;
+          } else if (type === "date") {
+            aVal = new Date(cellA).getTime();
+            bVal = new Date(cellB).getTime();
+            if (isNaN(aVal) && isNaN(bVal)) return 0;
+            if (isNaN(aVal)) return 1;
+            if (isNaN(bVal)) return -1;
+            return aVal - bVal;
+          } else {
+            // text
+            return cellA.localeCompare(cellB, undefined, { numeric: true, sensitivity: "base" });
+          }
+        });
+
+        if (direction === "desc") {
+          rows.reverse();
+        }
+
+        // Re-append rows in sorted order
+        rows.forEach(function (row) {
+          tbody.appendChild(row);
+        });
+      });
+    });
+  });
+});
+</script>
+""".strip())
+
+    return "\n".join(html_parts)
+
+
+def polars_df_to_html_table(df: pl.DataFrame) -> str:
+    """
+    Convert a Polars DataFrame to a styled HTML table.
+
+    - Column headers centered
+    - Numeric & temporal columns right-aligned
+    - Text columns left-aligned
+    - Alternating row colors
+    """
+
+    columns = df.columns
+
+    # Detect type (numeric/temporal vs text) by inspecting first non-null value
+    col_align = {}  # column -> "num" or "text"
+
+    for col in columns:
+        series = df[col]
+        # default to text
+        col_align[col] = "text"
+        non_null = series.drop_nulls()
+        if non_null.len() == 0:
+            continue
+        sample = non_null[0]
+        if isinstance(sample, (int, float, complex)):
+            col_align[col] = "num"
+        elif isinstance(sample, (date, datetime)):
+            col_align[col] = "num"  # temporal -> right-aligned
+
+    def format_value(val):
+        if val is None:
+            return ""
+        if isinstance(val, datetime):
+            return val.replace(microsecond=0).isoformat(sep=" ")
+        if isinstance(val, date):
+            return val.isoformat()
+        return str(val)
+
+    html_parts = []
+
+    # CSS styles
+    html_parts.append("""
+<style>
+  table.polars-table {
+    border-collapse: collapse;
+    border: 1px solid #ccc;
+    font-family: sans-serif;
+    font-size: 14px;
+  }
+  .polars-table th,
+  .polars-table td {
+    padding: 4px 8px;
+    border: 1px solid #ccc;
+  }
+  .polars-table th {
+    background-color: #f4f4f4;
+    text-align: center;      /* column headers centered */
+    font-weight: bold;
+  }
+  .polars-table tbody tr:nth-child(odd) {
+    background-color: #ffffff;
+  }
+  .polars-table tbody tr:nth-child(even) {
+    background-color: #fafafa;
+  }
+  .text-cell {
+    text-align: left;        /* strings */
+  }
+  .num-cell {
+    text-align: right;       /* numbers & dates */
+  }
+</style>
+""".strip())
+
+    # Table start
+    html_parts.append('<table class="polars-table">')
+
+    # Header
+    html_parts.append("<thead>")
+    html_parts.append("<tr>")
+    for col in columns:
+        html_parts.append(f"<th>{html.escape(col)}</th>")
+    html_parts.append("</tr>")
+    html_parts.append("</thead>")
+
+    # Body
+    html_parts.append("<tbody>")
+    for row in df.iter_rows(named=True):
+        html_parts.append("<tr>")
+        for col in columns:
+            val = row[col]
+            val_str = format_value(val)
+            align_class = "num-cell" if col_align[col] == "num" else "text-cell"
+            html_parts.append(
+                f'<td class="{align_class}">{html.escape(val_str)}</td>'
+            )
+        html_parts.append("</tr>")
+    html_parts.append("</tbody>")
+
+    html_parts.append("</table>")
+
+    return "\n".join(html_parts)
 
 
 if __name__ == "__main__":
